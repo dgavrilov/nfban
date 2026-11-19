@@ -57,7 +57,7 @@ usage() {
       ;;
     status)
       printf '%s\n' 'Usage: nfban status [--check]' \
-        'Shows saved counts and live availability. --check compares all entries.' \
+        'Shows ban counts and live availability. --check compares all entries.' \
         "Example: ${sudo_prefix}nfban status --check"
       ;;
     *)
@@ -369,7 +369,7 @@ status() {
   local host_count cidr_count active name result=0 checked
   host_count=$(read_hosts | wc -l)
   cidr_count=$(wc -l <"$cidrs")
-  printf 'saved_hosts=%d\nsaved_subnets=%d\n' "$host_count" "$cidr_count"
+  printf 'banned_hosts=%d\nbanned_subnets=%d\n' "$host_count" "$cidr_count"
   if ! active=$(active_suffix 2>/dev/null) \
     || ! nft -t list set inet nfban "blocked$active" >/dev/null \
     || ! nft -t list set inet nfban "blocked_cidrs$active" >/dev/null; then

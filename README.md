@@ -74,7 +74,7 @@ Every command accepts `-h` or `--help`.
 | `add <IPv4\|CIDR>`    | Ban an address or subnet, live and on disk              |
 | `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)     |
 | `list`                | Print saved bans in numeric order                       |
-| `status [--check]`    | Show saved counts and the state of live rules           |
+| `status [--check]`    | Show ban counts and the state of live rules             |
 
 ### Examples
 
@@ -102,11 +102,11 @@ sudo nfban status --check
 
 ### Status
 
-`status` prints `key=value` lines:
+`status` prints `key=value` lines. Ban counts come from the saved files:
 
 ```text
-saved_hosts=2
-saved_subnets=1
+banned_hosts=2
+banned_subnets=1
 active=available
 ```
 
