@@ -101,7 +101,6 @@ write_unit() {
   cat <<UNIT
 [Unit]
 Description=Load permanent IPv4 bans
-Wants=nftables.service
 After=nftables.service
 PartOf=nftables.service
 
