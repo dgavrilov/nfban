@@ -41,11 +41,11 @@ readonly sudo_prefix
 colors_for() {
   [[ -t $1 && -z ${NO_COLOR-} && ${TERM-dumb} != dumb ]]
 }
-bold= dim= red= green= yellow= reset=
+bold='' dim='' red='' green='' yellow='' reset=''
 if colors_for 1; then
   bold=$'\e[1m' dim=$'\e[2m' red=$'\e[31m' green=$'\e[32m' yellow=$'\e[33m' reset=$'\e[0m'
 fi
-err_bold= err_dim= err_red= err_reset=
+err_bold='' err_dim='' err_red='' err_reset=''
 if colors_for 2; then
   err_bold=$'\e[1m' err_dim=$'\e[2m' err_red=$'\e[31m' err_reset=$'\e[0m'
 fi
@@ -521,8 +521,10 @@ main() {
   esac
   case $command in
     add | remove)
-      (($# == 1)) || die 'expected one IPv4 address or CIDR' "${sudo_prefix}nfban $command 192.0.2.10"
-      parse_address "$1" || die "invalid IPv4 address or CIDR: $1" "${sudo_prefix}nfban $command 192.0.2.10"
+      (($# == 1)) \
+        || die 'expected one IPv4 address or CIDR' "${sudo_prefix}nfban $command 192.0.2.10"
+      parse_address "$1" \
+        || die "invalid IPv4 address or CIDR: $1" "${sudo_prefix}nfban $command 192.0.2.10"
       ;;
     status)
       [[ $# == 0 || ($# == 1 && $1 == --check) ]] \
@@ -544,7 +546,8 @@ main() {
     init
     return
   fi
-  [[ -f $unit && -d $hosts && -f $cidrs ]] || die 'nfban is not initialized' "${sudo_prefix}nfban init"
+  [[ -f $unit && -d $hosts && -f $cidrs ]] \
+    || die 'nfban is not initialized' "${sudo_prefix}nfban init"
   lock
   case $command in
     add | remove) change_ban "$command" ;;
