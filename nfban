@@ -2,6 +2,8 @@
 
 set -euo pipefail
 shopt -s nullglob
+# Remember the user's locale before forcing C for predictable parsing.
+readonly user_locale=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
 export LC_ALL=C
 umask 077
 
@@ -19,7 +21,13 @@ function key(address, octet) {
 }'
 
 temp=
-trap 'if [[ -n $temp ]]; then rm -f -- "$temp"; fi' EXIT
+framed=
+cleanup() {
+  if [[ -n $temp ]]; then rm -f -- "$temp"; fi
+  # Close the blank-line frame around terminal output.
+  if [[ -n $framed ]]; then printf '\n' >&"$framed"; fi
+}
+trap cleanup EXIT
 
 sudo_prefix=
 if ((EUID != 0)) || [[ ${SUDO_UID:-0} != 0 ]]; then
@@ -29,47 +37,115 @@ if ((EUID != 0)) || [[ ${SUDO_UID:-0} != 0 ]]; then
 fi
 readonly sudo_prefix
 
+# Colors only on terminals, honoring NO_COLOR (https://no-color.org).
+colors_for() {
+  [[ -t $1 && -z ${NO_COLOR-} && ${TERM-dumb} != dumb ]]
+}
+bold= dim= red= green= yellow= reset=
+if colors_for 1; then
+  bold=$'\e[1m' dim=$'\e[2m' red=$'\e[31m' green=$'\e[32m' yellow=$'\e[33m' reset=$'\e[0m'
+fi
+err_bold= err_dim= err_red= err_reset=
+if colors_for 2; then
+  err_bold=$'\e[1m' err_dim=$'\e[2m' err_red=$'\e[31m' err_reset=$'\e[0m'
+fi
+readonly bold dim red green yellow reset err_bold err_dim err_red err_reset
+readonly awk_error="${err_bold}${err_red}error:${err_reset} "
+case $user_locale in
+  *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) sym_ok='✓' sym_fail='✗' sym_dot='●' ;;
+  *) sym_ok='+' sym_fail='x' sym_dot='*' ;;
+esac
+readonly sym_ok sym_fail sym_dot
+
+heading() {
+  printf '%s%s%s\n' "$bold" "$1" "$reset"
+}
+
+success() {
+  printf '%s%s%s %s\n' "$green" "$sym_ok" "$reset" "$1"
+}
+
+hint() {
+  printf '  %s%s%s %s\n' "$dim" "$1" "$reset" "$2"
+}
+
+command_help() {
+  local example
+  heading Usage
+  printf '  %s\n\n%s\n\n' "$1" "$2"
+  heading Examples
+  for example in "${@:3}"; do
+    printf '  %s%s\n' "$sudo_prefix" "$example"
+  done
+}
+
+command_row() {
+  printf '  %s%-22s%s  %s\n' "$bold" "$1" "$reset" "$2"
+}
+
 usage() {
   case ${1-} in
     init)
-      printf '%s\n' 'Usage: nfban init' \
+      command_help 'nfban init' \
         'Creates storage and enables nfban.service without starting it.' \
-        "Example: ${sudo_prefix}nfban init"
+        'nfban init'
       ;;
     reload)
-      printf '%s\n' 'Usage: nfban reload' \
+      command_help 'nfban reload' \
         'Atomically switches to a new copy of the bans loaded in batches.' \
-        "Example: ${sudo_prefix}nfban reload"
+        'nfban reload'
       ;;
     add)
-      printf '%s\n' 'Usage: nfban add <IPv4|CIDR>' \
-        "Example: ${sudo_prefix}nfban add 192.0.2.10"
+      command_help 'nfban add <IPv4|CIDR>' \
+        'Bans an address or subnet live and saves it.' \
+        'nfban add 192.0.2.10' 'nfban add 198.51.100.0/24'
       ;;
     remove)
-      printf '%s\n' 'Usage: nfban <remove|rm> <IPv4|CIDR>' \
+      command_help 'nfban <remove|rm> <IPv4|CIDR>' \
         'Removes only the exact ban, not any covering subnet.' \
-        "Example: ${sudo_prefix}nfban rm 192.0.2.0/24"
+        'nfban rm 192.0.2.10' 'nfban rm 192.0.2.0/24'
       ;;
     list)
-      printf '%s\n' 'Usage: nfban list' \
-        'Lists saved bans in numeric order.' \
-        "Example: ${sudo_prefix}nfban list"
+      command_help 'nfban list' \
+        'Lists saved bans in numeric order, one per line.' \
+        'nfban list' 'nfban list | wc -l'
       ;;
     status)
-      printf '%s\n' 'Usage: nfban status [--check]' \
-        'Shows ban counts and live availability. --check compares all entries.' \
-        "Example: ${sudo_prefix}nfban status --check"
+      command_help 'nfban status [--check]' \
+        'Shows ban counts and live availability. --check compares all entries.
+Prints key=value lines when stdout is not a terminal.' \
+        'nfban status' 'nfban status --check'
       ;;
     *)
-      printf '%s\n' 'Usage: nfban <init|reload|add|remove|rm|list|status> [argument]' \
-        'Manage permanent IPv4 bans in nftables.' \
-        "Example: ${sudo_prefix}nfban add 192.0.2.10"
+      printf '%s\n\n' 'Manage permanent IPv4 bans in nftables.'
+      heading Usage
+      printf '  %s\n\n' 'nfban <command> [argument]'
+      heading Commands
+      command_row 'init' 'Create storage and enable nfban.service'
+      command_row 'reload' 'Atomically reload saved bans'
+      command_row 'add <IPv4|CIDR>' 'Ban an address or subnet'
+      command_row 'remove, rm <IPv4|CIDR>' 'Remove an exact ban'
+      command_row 'list' 'Print saved bans in numeric order'
+      command_row 'status [--check]' 'Show ban counts and live rule state'
+      printf '\n'
+      heading Examples
+      printf '  %s%s\n' "$sudo_prefix" 'nfban add 192.0.2.10' \
+        "$sudo_prefix" 'nfban add 198.51.100.0/24' "$sudo_prefix" 'nfban status --check'
+      printf '\n%s%s%s\n' "$dim" "Run 'nfban <command> --help' for details." "$reset"
       ;;
   esac
 }
 
+# die MESSAGE [COMMAND]: report an error and optionally a command to run next.
 die() {
-  printf 'nfban: %s\n' "$*" >&2
+  if [[ -z $framed && -t 2 ]]; then
+    printf '\n' >&2
+    framed=2
+  fi
+  printf '%serror:%s %s\n' "$err_bold$err_red" "$err_reset" "$1" >&2
+  if (($# > 1)); then
+    printf '  %sRun:%s %s\n' "$err_dim" "$err_reset" "$2" >&2
+  fi
   exit 1
 }
 
@@ -152,7 +228,8 @@ init() {
     )
   fi
   systemctl enable nfban.service
-  printf 'Enabled nfban.service. Start it now with: %ssystemctl start nfban\n' "$sudo_prefix"
+  success "Enabled ${bold}nfban.service${reset}"
+  hint 'Start it now:' "${sudo_prefix}systemctl start nfban"
 }
 
 read_hosts() {
@@ -196,9 +273,9 @@ active_suffix() {
 
 load_batches() {
   local name=$1 batch
-  awk -v name="$name" -v table="$nft_table" "$ip_key"'
+  awk -v name="$name" -v table="$nft_table" -v error="$awk_error" "$ip_key"'
     function invalid() {
-      print "nfban: invalid or out-of-order saved entry: " $0 > "/dev/stderr"
+      print error "invalid or out-of-order saved entry: " $0 > "/dev/stderr"
       failed = 1
       exit 1
     }
@@ -264,7 +341,7 @@ NFT
     discard_sets "$next" || :
     die 'could not switch sets; previous rules were left in place'
   fi
-  printf 'Reloaded %s\n' "$nft_table"
+  success "Reloaded ${bold}$nft_table${reset}"
 }
 
 update_element() {
@@ -281,13 +358,14 @@ update_element() {
 }
 
 insert_ban() {
-  awk -v address="$address" -v target="$network" -v prefix="$prefix" "$ip_key"'
+  awk -v address="$address" -v target="$network" -v prefix="$prefix" -v error="$awk_error" \
+    "$ip_key"'
     !inserted || prefix < 32 {
       current = key($0)
       if (prefix < 32) {
         split($0, fields, "/")
         if (current < target + 2^(32-prefix) && target < current + 2^(32-fields[2])) {
-          print "nfban: CIDR overlaps saved " $0 > "/dev/stderr"
+          print error "CIDR overlaps saved " $0 > "/dev/stderr"
           conflict = 1
           exit 1
         }
@@ -301,7 +379,7 @@ insert_ban() {
 
 change_ban() {
   local action=$1 file source active set_name saved
-  active=$(active_suffix) || die 'no active ban rules; run nfban reload'
+  active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
   if ((prefix == 32)); then
     printf -v file '%s/%03d.%03d.txt' "$hosts" "$((network >> 24))" "$((network >> 16 & 255))"
     set_name=blocked$active
@@ -341,10 +419,14 @@ change_ban() {
     temp=
     sync -- "${file%/*}"
   fi
-  if [[ $action == add ]]; then
-    printf 'Active: %s\n' "$address"
+  if [[ $action == add && $saved == 1 ]]; then
+    success "Already banned: $bold$address$reset"
+  elif [[ $action == add ]]; then
+    success "Banned $bold$address$reset"
+  elif [[ $saved == 1 ]]; then
+    success "Removed exact ban $bold$address$reset"
   else
-    printf 'Removed exact ban: %s\n' "$address"
+    success "No exact ban for $bold$address$reset"
   fi
 }
 
@@ -365,42 +447,62 @@ compare_live() {
   fi | sort | cmp -- - "$temp" >/dev/null
 }
 
+print_status() {
+  local state=$3 color symbol label
+  if [[ ! -t 1 ]]; then
+    printf 'banned_hosts=%d\nbanned_subnets=%d\nactive=%s\n' "$1" "$2" "$state"
+    return
+  fi
+  case $state in
+    available) color=$green symbol=$sym_dot label="active${reset}${dim}, use --check to compare" ;;
+    in_sync) color=$green symbol=$sym_ok label='in sync' ;;
+    out_of_sync) color=$yellow symbol=$sym_fail label='out of sync' ;;
+    *) color=$red symbol=$sym_fail label='unavailable' ;;
+  esac
+  printf '  %-16s %s\n' 'Banned hosts' "$1" 'Banned subnets' "$2"
+  printf '  %-16s %s%s %s%s\n' 'Live rules' "$color" "$symbol" "$label" "$reset"
+  case $state in
+    out_of_sync | unavailable)
+      printf '\n'
+      hint 'Run:' "${sudo_prefix}nfban reload"
+      ;;
+  esac
+}
+
 status() {
-  local host_count cidr_count active name result=0 checked
+  local host_count cidr_count active name state=available checked
   host_count=$(read_hosts | wc -l)
   cidr_count=$(wc -l <"$cidrs")
-  printf 'banned_hosts=%d\nbanned_subnets=%d\n' "$host_count" "$cidr_count"
   if ! active=$(active_suffix 2>/dev/null) \
     || ! nft -t list set inet nfban "blocked$active" >/dev/null \
     || ! nft -t list set inet nfban "blocked_cidrs$active" >/dev/null; then
-    printf '%s\n' 'active=unavailable'
-    return 1
+    state=unavailable
+  elif (($#)); then
+    require jq
+    state=in_sync
+    for name in "blocked$active" "blocked_cidrs$active"; do
+      checked=0
+      compare_live "$name" || checked=$?
+      rm -f -- "$temp"
+      temp=
+      if ((checked > 1)); then
+        state=unavailable
+        break
+      fi
+      if ((checked)); then state=out_of_sync; fi
+    done
   fi
-  if ((! $#)); then
-    printf '%s\n' 'active=available'
-    return
-  fi
-  require jq
-  for name in "blocked$active" "blocked_cidrs$active"; do
-    checked=0
-    compare_live "$name" || checked=$?
-    rm -f -- "$temp"
-    temp=
-    if ((checked > 1)); then
-      printf '%s\n' 'active=unavailable'
-      return 1
-    fi
-    if ((checked)); then result=1; fi
-  done
-  if ((result)); then
-    printf '%s\n' 'active=out_of_sync'
-    return 1
-  fi
-  printf '%s\n' 'active=in_sync'
+  print_status "$host_count" "$cidr_count" "$state"
+  [[ $state == available || $state == in_sync ]]
 }
 
 main() {
-  local command=${1-} address prefix network
+  local command=${1-} address prefix network run
+  # Frame terminal output with blank lines; cleanup closes the frame.
+  if [[ -t 1 ]]; then
+    printf '\n'
+    framed=1
+  fi
   case $command in
     '' | -h | --help)
       usage
@@ -408,10 +510,7 @@ main() {
       ;;
     rm) command=remove ;;
     init | reload | add | remove | list | status) ;;
-    *)
-      usage >&2
-      die "unknown command: $command"
-      ;;
+    *) die "unknown command: $command" 'nfban --help' ;;
   esac
   shift
   case ${1-} in
@@ -422,20 +521,22 @@ main() {
   esac
   case $command in
     add | remove)
-      (($# == 1)) || die "usage: nfban $command <IPv4|CIDR>"
-      parse_address "$1" || die "invalid IPv4 address or CIDR: $1"
+      (($# == 1)) || die 'expected one IPv4 address or CIDR' "${sudo_prefix}nfban $command 192.0.2.10"
+      parse_address "$1" || die "invalid IPv4 address or CIDR: $1" "${sudo_prefix}nfban $command 192.0.2.10"
       ;;
     status)
-      [[ $# == 0 || ($# == 1 && $1 == --check) ]] || die 'usage: nfban status [--check]'
+      [[ $# == 0 || ($# == 1 && $1 == --check) ]] \
+        || die "unexpected arguments: $*" "${sudo_prefix}nfban status --check"
       ;;
-    *) (($# == 0)) || die "usage: nfban $command" ;;
+    *) (($# == 0)) || die "nfban $command takes no arguments" "${sudo_prefix}nfban $command" ;;
   esac
 
   if ((EUID != 0)); then
     if [[ -n $sudo_prefix ]]; then
-      die "run as root: ${sudo_prefix}nfban $command"
+      printf -v run '%q ' nfban "$command" "$@"
+      die 'must run as root' "${sudo_prefix}${run% }"
     fi
-    die 'run as root'
+    die 'must run as root'
   fi
   require flock
   if [[ $command != list ]]; then require nft; fi
@@ -443,7 +544,7 @@ main() {
     init
     return
   fi
-  [[ -f $unit && -d $hosts && -f $cidrs ]] || die 'run nfban init first'
+  [[ -f $unit && -d $hosts && -f $cidrs ]] || die 'nfban is not initialized' "${sudo_prefix}nfban init"
   lock
   case $command in
     add | remove) change_ban "$command" ;;

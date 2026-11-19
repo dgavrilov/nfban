@@ -67,6 +67,11 @@ nfban <init|reload|add|remove|rm|list|status> [argument]
 
 Every command accepts `-h` or `--help`.
 
+On a terminal, output is framed by blank lines and uses colors and Unicode
+symbols. Colors are disabled when the stream is not a terminal, `TERM=dumb`, or
+[`NO_COLOR`](https://no-color.org) is set. Symbols fall back to ASCII unless the
+locale is UTF-8. Errors go to stderr and suggest a command to run next.
+
 | Command               | Description                                             |
 | --------------------- | ------------------------------------------------------- |
 | `init`                | Create storage and enable `nfban.service`               |
@@ -102,7 +107,15 @@ sudo nfban status --check
 
 ### Status
 
-`status` prints `key=value` lines. Ban counts come from the saved files:
+Ban counts come from the saved files. On a terminal, `status` prints a summary:
+
+```text
+  Banned hosts     2
+  Banned subnets   1
+  Live rules       ● active, use --check to compare
+```
+
+When stdout is not a terminal, it prints stable `key=value` lines for scripts:
 
 ```text
 banned_hosts=2
