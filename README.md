@@ -100,6 +100,7 @@ locale is UTF-8. Errors go to stderr and suggest a command to run next.
 | `init`                | Install packages, create storage, enable the unit       |
 | `reload`              | Rebuild live sets from saved bans and switch atomically |
 | `add <IPv4\|CIDR>`    | Ban an address or subnet, live and on disk              |
+| `add --batch`         | Ban addresses and subnets read from stdin               |
 | `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)     |
 | `list`                | Print saved bans in numeric order (no root needed)      |
 | `status`              | Show ban counts and the state of live rules             |
@@ -109,6 +110,7 @@ locale is UTF-8. Errors go to stderr and suggest a command to run next.
 ```sh
 sudo nfban add 192.0.2.10
 sudo nfban add 198.51.100.0/24
+sudo nfban add --batch < bans.txt
 sudo nfban rm 192.0.2.10
 sudo nfban list
 sudo nfban status
@@ -129,6 +131,27 @@ sudo nfban status
   before their subnet was added stay in the host files.
 - `add` and `remove` need active rules. If none exist, run `nfban reload` or
   `systemctl start nfban`.
+
+### Adding in batches
+
+`nfban add --batch` reads one address or subnet per line from stdin. On a
+terminal, paste the list and press Ctrl-D. Surrounding whitespace and `\r` are
+trimmed; blank lines and `#` comments are skipped.
+
+```sh
+sudo nfban add --batch < bans.txt
+```
+
+- Every line is checked first. If any line is invalid or a subnet overlaps a
+  saved subnet or another subnet in the list, all such lines are reported with
+  their line numbers and nothing is added.
+- Duplicates, already saved bans and hosts inside a saved or listed subnet are
+  skipped, the same way as with a single `add`.
+- The live sets are updated in batches of 4096 elements, then every `/16` file
+  that gains hosts is rewritten once. If the live update fails, nothing on disk
+  changes; run `nfban reload` to drop elements loaded before the failure.
+- The summary shows new hosts, new subnets, already banned entries and hosts
+  covered by subnets.
 
 ### Status
 
