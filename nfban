@@ -41,15 +41,15 @@ readonly sudo_prefix
 colors_for() {
   [[ -t $1 && -z ${NO_COLOR-} && ${TERM-dumb} != dumb ]]
 }
-bold='' dim='' red='' green='' yellow='' reset=''
+bold='' dim='' red='' green='' reset=''
 if colors_for 1; then
-  bold=$'\e[1m' dim=$'\e[2m' red=$'\e[31m' green=$'\e[32m' yellow=$'\e[33m' reset=$'\e[0m'
+  bold=$'\e[1m' dim=$'\e[2m' red=$'\e[31m' green=$'\e[32m' reset=$'\e[0m'
 fi
 err_bold='' err_dim='' err_red='' err_reset=''
 if colors_for 2; then
   err_bold=$'\e[1m' err_dim=$'\e[2m' err_red=$'\e[31m' err_reset=$'\e[0m'
 fi
-readonly bold dim red green yellow reset err_bold err_dim err_red err_reset
+readonly bold dim red green reset err_bold err_dim err_red err_reset
 readonly awk_error="${err_bold}${err_red}error:${err_reset} "
 case $user_locale in
   *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) sym_ok='✓' sym_fail='✗' sym_dot='●' ;;
@@ -87,7 +87,8 @@ usage() {
   case ${1-} in
     init)
       command_help 'nfban init' \
-        'Creates storage and enables nfban.service without starting it.' \
+        'Installs missing packages via apt-get, creates storage and enables
+nfban.service without starting it.' \
         'nfban init'
       ;;
     reload)
@@ -111,26 +112,26 @@ usage() {
         'nfban list' 'nfban list | wc -l'
       ;;
     status)
-      command_help 'nfban status [--check]' \
-        'Shows ban counts and live availability. --check compares all entries.
+      command_help 'nfban status' \
+        'Shows ban counts and live availability.
 Prints key=value lines when stdout is not a terminal.' \
-        'nfban status' 'nfban status --check'
+        'nfban status'
       ;;
     *)
       printf '%s\n\n' 'Manage permanent IPv4 bans in nftables.'
       heading Usage
       printf '  %s\n\n' 'nfban <command> [argument]'
       heading Commands
-      command_row 'init' 'Create storage and enable nfban.service'
+      command_row 'init' 'Install packages, create storage, enable nfban.service'
       command_row 'reload' 'Atomically reload saved bans'
       command_row 'add <IPv4|CIDR>' 'Ban an address or subnet'
       command_row 'remove, rm <IPv4|CIDR>' 'Remove an exact ban'
       command_row 'list' 'Print saved bans in numeric order'
-      command_row 'status [--check]' 'Show ban counts and live rule state'
+      command_row 'status' 'Show ban counts and live rule state'
       printf '\n'
       heading Examples
       printf '  %s%s\n' "$sudo_prefix" 'nfban add 192.0.2.10' \
-        "$sudo_prefix" 'nfban add 198.51.100.0/24' "$sudo_prefix" 'nfban status --check'
+        "$sudo_prefix" 'nfban add 198.51.100.0/24' "$sudo_prefix" 'nfban status'
       printf '\n%s%s%s\n' "$dim" "Run 'nfban <command> --help' for details." "$reset"
       ;;
   esac
@@ -151,6 +152,28 @@ die() {
 
 require() {
   command -v "$1" >/dev/null || die "missing required command: $1"
+}
+
+# Installs the packages providing missing commands (Debian/Ubuntu only).
+install_packages() {
+  local packages=()
+  command -v nft >/dev/null || packages+=(nftables)
+  command -v flock >/dev/null || packages+=(util-linux)
+  ((${#packages[@]})) || return 0
+  command -v apt-get >/dev/null \
+    || die "missing packages: ${packages[*]}; install them and rerun nfban init"
+  printf 'Installing %s\n' "${packages[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  if ! apt-get -q update || ! apt-get -q install -y --no-install-recommends "${packages[@]}"; then
+    die "could not install: ${packages[*]}"
+  fi
+  # nftables.service loads /etc/nftables.conf, which usually starts with
+  # 'flush ruleset' and would wipe ufw, Docker and fail2ban rules.
+  if [[ ${packages[0]} == nftables ]] && systemctl -q is-enabled nftables.service 2>/dev/null; then
+    printf '%swarning:%s %s\n' "$err_bold" "$err_reset" \
+      'nftables.service is enabled; at boot it may flush other firewall rules' >&2
+    printf '  %sRun:%s %s\n' "$err_dim" "$err_reset" "${sudo_prefix}systemctl disable nftables" >&2
+  fi
 }
 
 lock() {
@@ -430,23 +453,6 @@ change_ban() {
   fi
 }
 
-compare_live() {
-  local set_name=$1
-  temp=$(mktemp) || return 2
-  nft -j -n list set inet nfban "$set_name" \
-    | jq -r '
-      .nftables[] | .set? // empty | .elem[]?
-      | if type == "string" then .
-        elif .prefix then "\(.prefix.addr)/\(.prefix.len)"
-        else error("unsupported nftables element") end
-    ' | sort >"$temp" || return 2
-  if [[ $set_name == blocked_cidrs* ]]; then
-    cat -- "$cidrs"
-  else
-    read_hosts
-  fi | sort | cmp -- - "$temp" >/dev/null
-}
-
 print_status() {
   local state=$3 color symbol label
   if [[ ! -t 1 ]]; then
@@ -454,46 +460,28 @@ print_status() {
     return
   fi
   case $state in
-    available) color=$green symbol=$sym_dot label="active${reset}${dim}, use --check to compare" ;;
-    in_sync) color=$green symbol=$sym_ok label='in sync' ;;
-    out_of_sync) color=$yellow symbol=$sym_fail label='out of sync' ;;
+    available) color=$green symbol=$sym_dot label='active' ;;
     *) color=$red symbol=$sym_fail label='unavailable' ;;
   esac
   printf '  %-16s %s\n' 'Banned hosts' "$1" 'Banned subnets' "$2"
   printf '  %-16s %s%s %s%s\n' 'Live rules' "$color" "$symbol" "$label" "$reset"
-  case $state in
-    out_of_sync | unavailable)
-      printf '\n'
-      hint 'Run:' "${sudo_prefix}nfban reload"
-      ;;
-  esac
+  if [[ $state == unavailable ]]; then
+    printf '\n'
+    hint 'Run:' "${sudo_prefix}nfban reload"
+  fi
 }
 
 status() {
-  local host_count cidr_count active name state=available checked
+  local host_count cidr_count active state=available
   host_count=$(read_hosts | wc -l)
   cidr_count=$(wc -l <"$cidrs")
   if ! active=$(active_suffix 2>/dev/null) \
     || ! nft -t list set inet nfban "blocked$active" >/dev/null \
     || ! nft -t list set inet nfban "blocked_cidrs$active" >/dev/null; then
     state=unavailable
-  elif (($#)); then
-    require jq
-    state=in_sync
-    for name in "blocked$active" "blocked_cidrs$active"; do
-      checked=0
-      compare_live "$name" || checked=$?
-      rm -f -- "$temp"
-      temp=
-      if ((checked > 1)); then
-        state=unavailable
-        break
-      fi
-      if ((checked)); then state=out_of_sync; fi
-    done
   fi
   print_status "$host_count" "$cidr_count" "$state"
-  [[ $state == available || $state == in_sync ]]
+  [[ $state == available ]]
 }
 
 main() {
@@ -526,10 +514,6 @@ main() {
       parse_address "$1" \
         || die "invalid IPv4 address or CIDR: $1" "${sudo_prefix}nfban $command 192.0.2.10"
       ;;
-    status)
-      [[ $# == 0 || ($# == 1 && $1 == --check) ]] \
-        || die "unexpected arguments: $*" "${sudo_prefix}nfban status --check"
-      ;;
     *) (($# == 0)) || die "nfban $command takes no arguments" "${sudo_prefix}nfban $command" ;;
   esac
 
@@ -540,6 +524,7 @@ main() {
     fi
     die 'must run as root'
   fi
+  if [[ $command == init ]]; then install_packages; fi
   require flock
   if [[ $command != list ]]; then require nft; fi
   if [[ $command == init ]]; then
@@ -553,7 +538,7 @@ main() {
     add | remove) change_ban "$command" ;;
     reload) reload ;;
     list) list_bans ;;
-    status) status "$@" ;;
+    status) status ;;
   esac
 }
 

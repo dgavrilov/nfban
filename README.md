@@ -28,8 +28,10 @@ IPv6 is not supported.
 - Bash
 - `nft` and a kernel that support the `destroy` command
 - `flock` (util-linux), GNU coreutils, `awk`, `xargs`, `grep`
-- `jq`, only for `nfban status --check`
 - Root privileges; `sudo` is used in hints if available
+
+On Debian and Ubuntu, `nfban init` installs missing `nftables` and `util-linux`
+packages with `apt-get`. On other systems install them manually.
 
 ## Installation
 
@@ -44,6 +46,8 @@ sudo systemctl start nfban
 
 `nfban init` does the following:
 
+- installs `nftables` and `util-linux` via `apt-get` if `nft` or `flock` is
+  missing, and warns if `nftables.service` is enabled after that;
 - creates `/etc/nfban/hosts/` and `/etc/nfban/cidrs.txt`;
 - writes `/etc/systemd/system/nfban.service`;
 - enables the unit without starting it.
@@ -56,8 +60,11 @@ sudo systemctl start nfban
   in `/etc/nfban`.
 
 The unit is ordered `After=nftables.service` and declared `PartOf=nftables.service`,
-so restarting nftables, which usually flushes the ruleset, reloads the bans as
-well.
+so restarting nftables reloads the bans as well. It does not pull in
+`nftables.service`: that service loads `/etc/nftables.conf`, which usually starts
+with `flush ruleset` and wipes rules managed by ufw, Docker or fail2ban. On such
+hosts keep `nftables.service` disabled or masked; nfban creates its own table and
+does not need it.
 
 ## Usage
 
@@ -74,12 +81,12 @@ locale is UTF-8. Errors go to stderr and suggest a command to run next.
 
 | Command               | Description                                             |
 | --------------------- | ------------------------------------------------------- |
-| `init`                | Create storage and enable `nfban.service`               |
+| `init`                | Install packages, create storage, enable the unit       |
 | `reload`              | Rebuild live sets from saved bans and switch atomically |
 | `add <IPv4\|CIDR>`    | Ban an address or subnet, live and on disk              |
 | `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)     |
 | `list`                | Print saved bans in numeric order                       |
-| `status [--check]`    | Show ban counts and the state of live rules             |
+| `status`              | Show ban counts and the state of live rules             |
 
 ### Examples
 
@@ -88,7 +95,7 @@ sudo nfban add 192.0.2.10
 sudo nfban add 198.51.100.0/24
 sudo nfban rm 192.0.2.10
 sudo nfban list
-sudo nfban status --check
+sudo nfban status
 ```
 
 ### Adding and removing
@@ -112,7 +119,7 @@ Ban counts come from the saved files. On a terminal, `status` prints a summary:
 ```text
   Banned hosts     2
   Banned subnets   1
-  Live rules       ● active, use --check to compare
+  Live rules       ● active
 ```
 
 When stdout is not a terminal, it prints stable `key=value` lines for scripts:
@@ -123,14 +130,12 @@ banned_subnets=1
 active=available
 ```
 
-| `active` value | Meaning                                       | Exit code |
-| -------------- | --------------------------------------------- | --------- |
-| `available`    | Live rules and sets exist                     | 0         |
-| `in_sync`      | `--check`: live sets match saved bans exactly | 0         |
-| `out_of_sync`  | `--check`: live sets differ from saved bans   | 1         |
-| `unavailable`  | Live rules or sets are missing                | 1         |
+| `active` value | Meaning                        | Exit code |
+| -------------- | ------------------------------ | --------- |
+| `available`    | Live rules and sets exist      | 0         |
+| `unavailable`  | Live rules or sets are missing | 1         |
 
-If the state is `out_of_sync`, run `nfban reload`.
+If the state is `unavailable`, run `nfban reload`.
 
 ## Storage
 
