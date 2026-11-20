@@ -205,11 +205,15 @@ parse_address() {
   fi
 }
 
+# Before=network-online.target: services waiting for the network (angie,
+# docker) start only after the bans are loaded, while the network itself
+# comes up in parallel.
 write_unit() {
   cat <<UNIT
 [Unit]
 Description=Load permanent IPv4 bans
 After=nftables.service
+Before=network-online.target
 PartOf=nftables.service
 
 [Service]
@@ -223,19 +227,36 @@ WantedBy=multi-user.target
 UNIT
 }
 
+# The unit runs the script as root at boot, so nobody else may be able to
+# replace it or any directory above it.
+check_script_owner() {
+  local path=$1 owner mode
+  while
+    read -r owner mode <<<"$(stat -c '%u %a' -- "$path")"
+    ((owner == 0 && ! (8#$mode & 8#022))) \
+      || die "$path must be owned by root and writable only by root"
+    [[ $path != / ]]
+  do
+    path=${path%/*}
+    path=${path:-/}
+  done
+}
+
 init() {
   local script tables
   require systemctl
   script=$(realpath -- "${BASH_SOURCE[0]}")
   [[ -x $script && $script =~ ^/[[:alnum:]_./-]+$ ]] \
     || die 'install nfban as an executable at a stable path (e.g. /usr/local/sbin/nfban)'
+  check_script_owner "$script"
   mkdir -p -- "$config"
   lock
   if [[ -e $config/bans || -e $config/blocked.nft || -e $config/table.nft ]]; then
     die "old storage found in $config; export the bans and set up a clean installation"
   fi
   if [[ -e $unit || -L $unit ]]; then
-    if ! [[ -f $unit && ! -L $unit ]] || ! write_unit "$script" | cmp -s -- - "$unit"; then
+    # Older versions of nfban wrote a unit for the same script; replace it.
+    if ! [[ -f $unit && ! -L $unit ]] || ! grep -Fxq -- "ExecStart=$script reload" "$unit"; then
       die "unexpected contents in $unit; refusing to overwrite it"
     fi
   else
@@ -253,12 +274,9 @@ init() {
       : >"$cidrs"
     )
   fi
-  if [[ ! -e $unit ]]; then
-    (
-      mkdir -p -- "${unit%/*}"
-      set -o noclobber
-      write_unit "$script" >"$unit"
-    )
+  if ! write_unit "$script" | cmp -s -- - "$unit"; then
+    mkdir -p -- "${unit%/*}"
+    write_unit "$script" >"$unit"
   fi
   systemctl enable nfban.service
   success "Enabled ${bold}nfban.service${reset}"
@@ -295,13 +313,18 @@ list_bans() {
 }
 
 active_suffix() {
-  local rules
-  rules=$(nft -n list chain inet nfban input) || return 1
-  case $rules in
-    *'@blocked_next drop'*) printf '%s' '_next' ;;
-    *'@blocked drop'*) ;;
-    *) return 1 ;;
-  esac
+  local chain rules
+  # Versions before the prerouting chain dropped bans in the input chain.
+  for chain in prerouting input; do
+    rules=$(nft -n list chain inet nfban "$chain" 2>/dev/null) || continue
+    case $rules in
+      *'@blocked_next drop'*) printf '%s' '_next' ;;
+      *'@blocked drop'*) ;;
+      *) return 1 ;;
+    esac
+    return
+  done
+  return 1
 }
 
 load_batches() {
@@ -341,10 +364,15 @@ NFT
 }
 
 reload() {
-  local active next=_next
-  if active=$(active_suffix 2>/dev/null) && [[ -n $active ]]; then
+  local active next=_next legacy='' chain
+  if active=$(active_suffix) && [[ -n $active ]]; then
     next=
   fi
+  for chain in input forward; do
+    if nft list chain inet nfban "$chain" >/dev/null 2>&1; then
+      legacy+="flush chain $nft_table $chain"$'\n'"delete chain $nft_table $chain"$'\n'
+    fi
+  done
   nft -f - <<NFT
 add table $nft_table
 destroy set $nft_table blocked$next
@@ -357,17 +385,14 @@ NFT
     discard_sets "$next" || :
     die 'batch load failed; previous rules were left in place'
   fi
-  # Rules and set references change in the same kernel transaction.
+  # Rules and set references change in the same kernel transaction. Priority
+  # raw drops banned packets before conntrack, so they create no state.
   if ! nft -f - <<NFT
-add chain $nft_table input { type filter hook input priority -10; policy accept; }
-add chain $nft_table forward { type filter hook forward priority -10; policy accept; }
-flush chain $nft_table input
-flush chain $nft_table forward
-add rule $nft_table input ip saddr @blocked$next drop
-add rule $nft_table input ip saddr @blocked_cidrs$next drop
-add rule $nft_table forward ip saddr @blocked$next drop
-add rule $nft_table forward ip saddr @blocked_cidrs$next drop
-destroy set $nft_table blocked$active
+add chain $nft_table prerouting { type filter hook prerouting priority raw; policy accept; }
+flush chain $nft_table prerouting
+add rule $nft_table prerouting ip saddr @blocked$next drop
+add rule $nft_table prerouting ip saddr @blocked_cidrs$next drop
+${legacy}destroy set $nft_table blocked$active
 destroy set $nft_table blocked_cidrs$active
 NFT
   then

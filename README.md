@@ -9,7 +9,9 @@ Bans are stored as plain text files under `/etc/nfban`, loaded into a dedicated
 ## Features
 
 - Bans single IPv4 addresses and CIDR subnets.
-- Drops matching source addresses in both the `input` and `forward` hooks.
+- Drops matching source addresses in `prerouting` at priority `raw`, before
+  connection tracking, so banned traffic creates no conntrack entries and never
+  reaches local services or containers.
 - Uses its own `inet nfban` table and leaves the rest of the ruleset alone.
 - Reloads atomically: a fresh copy of the sets is loaded in batches of 4096
   elements, then rules switch to it in a single kernel transaction. If loading
@@ -38,6 +40,8 @@ packages with `apt-get`. On other systems install them manually.
 
 Install the script at a stable path. `init` writes this path into the systemd
 unit, so the path must contain only letters, digits, `_`, `.`, `/` and `-`.
+The unit runs the script as root at boot, so the script and every directory
+above it must be owned by root and writable only by root.
 
 ```sh
 sudo install -m 755 nfban /usr/local/sbin/nfban
@@ -52,22 +56,31 @@ sudo systemctl start nfban
 - creates `/etc/nfban/hosts/` and `/etc/nfban/cidrs.txt` and makes `/etc/nfban`
   readable by all users (this also fixes installs made by older versions, which
   created it readable by root only);
-- writes `/etc/systemd/system/nfban.service`;
+- writes `/etc/systemd/system/nfban.service`, replacing a unit written by an
+  older version for the same script;
 - enables the unit without starting it.
 
 `init` can be run again safely. It refuses to continue if:
 
-- the unit file exists with different contents;
+- the script or a directory above it is not owned by root or is writable by
+  others;
+- the unit file exists but was not written by nfban for this script path;
 - an `inet nfban` table already exists before the unit is installed;
 - storage from an older layout (`bans`, `blocked.nft`, `table.nft`) is present
   in `/etc/nfban`.
 
-The unit is ordered `After=nftables.service` and declared `PartOf=nftables.service`,
-so restarting nftables reloads the bans as well. It does not pull in
-`nftables.service`: that service loads `/etc/nftables.conf`, which usually starts
-with `flush ruleset` and wipes rules managed by ufw, Docker or fail2ban. On such
-hosts keep `nftables.service` disabled or masked; nfban creates its own table and
-does not need it.
+The unit is ordered `Before=network-online.target`. The network comes up in
+parallel with loading the bans, but services that wait for the network, such as
+Angie or Docker, start only after the bans are active. With about a million bans
+this delays them by several seconds. Services ordered only after
+`network.target`, such as sshd, are not delayed.
+
+The unit is also ordered `After=nftables.service` and declared
+`PartOf=nftables.service`, so restarting nftables reloads the bans as well. It
+does not pull in `nftables.service`: that service loads `/etc/nftables.conf`,
+which usually starts with `flush ruleset` and wipes rules managed by ufw, Docker
+or fail2ban. On such hosts keep `nftables.service` disabled or masked; nfban
+creates its own table and does not need it.
 
 ## Usage
 
@@ -168,14 +181,17 @@ table inet nfban {
   set blocked        { type ipv4_addr; }
   set blocked_cidrs  { type ipv4_addr; flags interval; }
 
-  chain input   { type filter hook input   priority -10; policy accept; ... drop }
-  chain forward { type filter hook forward priority -10; policy accept; ... drop }
+  chain prerouting { type filter hook prerouting priority raw; policy accept; ... drop }
 }
 ```
 
 `reload` alternates between two pairs of sets, `blocked`/`blocked_cidrs` and
-`blocked_next`/`blocked_cidrs_next`. The chains always reference exactly one
+`blocked_next`/`blocked_cidrs_next`. The chain always references exactly one
 pair.
+
+Older versions dropped bans in `input` and `forward` chains. The first `reload`
+after an upgrade removes them in the same transaction that creates `prerouting`;
+until then `add` and `remove` keep working with the old chains.
 
 ## Uninstall
 
