@@ -435,9 +435,28 @@ insert_ban() {
   ' "$1"
 }
 
+# Prints the saved subnet containing the host being added, if any.
+covering_subnet() {
+  awk -v target="$network" "$ip_key"'
+    { split($0, fields, "/"); start = key($0) }
+    start > target { exit }
+    target < start + 2^(32-fields[2]) { print; exit }
+  ' "$cidrs"
+}
+
 change_ban() {
-  local action=$1 file source active set_name saved
+  local action=$1 file source active set_name saved covering
   active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
+  if [[ $action == add ]] && ((prefix == 32)); then
+    covering=$(covering_subnet)
+    if [[ -n $covering ]]; then
+      # Like any repeated add, this restores a missing live element.
+      update_element add "blocked_cidrs$active" "$covering" \
+        || die 'nftables update failed'
+      success "Already banned by subnet $bold$covering$reset"
+      return
+    fi
+  fi
   if ((prefix == 32)); then
     printf -v file '%s/%03d.%03d.txt' "$hosts" "$((network >> 24))" "$((network >> 16 & 255))"
     set_name=blocked$active

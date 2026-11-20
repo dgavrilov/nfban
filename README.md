@@ -123,8 +123,10 @@ sudo nfban status
   a stray one.
 - `remove` deletes only the exact entry. Removing `192.0.2.10` does not affect
   a saved `192.0.2.0/24`, and the reverse is also true.
-- A new subnet must not overlap any saved subnet. Single hosts are stored
-  separately and may lie inside a saved subnet.
+- A new subnet must not overlap any saved subnet.
+- A host inside a saved subnet is not saved again: `add` reports the covering
+  subnet and only restores it in the live set if it is missing. Hosts saved
+  before their subnet was added stay in the host files.
 - `add` and `remove` need active rules. If none exist, run `nfban reload` or
   `systemctl start nfban`.
 
