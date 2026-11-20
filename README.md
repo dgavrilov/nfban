@@ -28,7 +28,8 @@ IPv6 is not supported.
 - Bash
 - `nft` and a kernel that support the `destroy` command
 - `flock` (util-linux), GNU coreutils, `awk`, `xargs`, `grep`
-- Root privileges; `sudo` is used in hints if available
+- Root privileges for every command except `list`; `sudo` is used in hints if
+  available
 
 On Debian and Ubuntu, `nfban init` installs missing `nftables` and `util-linux`
 packages with `apt-get`. On other systems install them manually.
@@ -48,7 +49,9 @@ sudo systemctl start nfban
 
 - installs `nftables` and `util-linux` via `apt-get` if `nft` or `flock` is
   missing, and warns if `nftables.service` is enabled after that;
-- creates `/etc/nfban/hosts/` and `/etc/nfban/cidrs.txt`;
+- creates `/etc/nfban/hosts/` and `/etc/nfban/cidrs.txt` and makes `/etc/nfban`
+  readable by all users (this also fixes installs made by older versions, which
+  created it readable by root only);
 - writes `/etc/systemd/system/nfban.service`;
 - enables the unit without starting it.
 
@@ -85,7 +88,7 @@ locale is UTF-8. Errors go to stderr and suggest a command to run next.
 | `reload`              | Rebuild live sets from saved bans and switch atomically |
 | `add <IPv4\|CIDR>`    | Ban an address or subnet, live and on disk              |
 | `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)     |
-| `list`                | Print saved bans in numeric order                       |
+| `list`                | Print saved bans in numeric order (no root needed)      |
 | `status`              | Show ban counts and the state of live rules             |
 
 ### Examples
@@ -147,6 +150,9 @@ If the state is `unavailable`, run `nfban reload`.
 ├── cidrs.txt          # subnets, one per line
 └── nfban.lock
 ```
+
+Directories are `0755` and files `0644`, so any local user can read the bans and
+run `nfban list`. Only root can change them.
 
 Every file is sorted numerically. Host files use zero-padded names so they sort
 in numeric order. Subnets must be aligned to their prefix and must not overlap.

@@ -5,7 +5,8 @@ shopt -s nullglob
 # Remember the user's locale before forcing C for predictable parsing.
 readonly user_locale=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
 export LC_ALL=C
-umask 077
+# Saved bans are world-readable so that list works without root.
+umask 022
 
 readonly config=/etc/nfban
 readonly hosts=$config/hosts
@@ -176,9 +177,17 @@ install_packages() {
   fi
 }
 
+# lock [shared]: list takes a shared lock through a read-only descriptor,
+# so it works without root.
 lock() {
-  exec 9>>"$config/nfban.lock"
-  flock -x 9
+  if [[ ${1-} == shared ]]; then
+    { exec 9<"$config/nfban.lock"; } 2>/dev/null \
+      || die "cannot open $config/nfban.lock" "${sudo_prefix}nfban init"
+    flock -s 9
+  else
+    exec 9>>"$config/nfban.lock"
+    flock -x 9
+  fi
 }
 
 parse_address() {
@@ -236,6 +245,8 @@ init() {
     fi
   fi
   mkdir -p -- "$hosts"
+  # Older versions created the storage readable by root only.
+  chmod -R u=rwX,go=rX -- "$config"
   if [[ ! -e $cidrs ]]; then
     (
       set -o noclobber
@@ -244,7 +255,6 @@ init() {
   fi
   if [[ ! -e $unit ]]; then
     (
-      umask 022
       mkdir -p -- "${unit%/*}"
       set -o noclobber
       write_unit "$script" >"$unit"
@@ -425,6 +435,7 @@ change_ban() {
 
   if [[ $action == add && $saved == 0 || $action == remove && $saved == 1 ]]; then
     temp=$(mktemp -- "$file.XXXXXX")
+    chmod 644 -- "$temp"
     if [[ $action == add ]]; then
       insert_ban "$source" >"$temp"
     else
@@ -517,7 +528,7 @@ main() {
     *) (($# == 0)) || die "nfban $command takes no arguments" "${sudo_prefix}nfban $command" ;;
   esac
 
-  if ((EUID != 0)); then
+  if ((EUID != 0)) && [[ $command != list ]]; then
     if [[ -n $sudo_prefix ]]; then
       printf -v run '%q ' nfban "$command" "$@"
       die 'must run as root' "${sudo_prefix}${run% }"
@@ -531,9 +542,12 @@ main() {
     init
     return
   fi
+  if [[ -e $config && ! (-r $config && -x $config) ]]; then
+    die "cannot read $config" "${sudo_prefix}nfban init"
+  fi
   [[ -f $unit && -d $hosts && -f $cidrs ]] \
     || die 'nfban is not initialized' "${sudo_prefix}nfban init"
-  lock
+  if [[ $command == list ]]; then lock shared; else lock; fi
   case $command in
     add | remove) change_ban "$command" ;;
     reload) reload ;;
