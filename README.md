@@ -13,13 +13,14 @@ Bans are stored as plain text files under `/etc/nfban`, loaded into a dedicated
   connection tracking, so banned traffic creates no conntrack entries and never
   reaches local services or containers.
 - Uses its own `inet nfban` table and leaves the rest of the ruleset alone.
-- Reloads atomically: a fresh copy of the sets is loaded in batches of 4096
+- Reloads atomically: a fresh copy of the sets is loaded in batches of 16384
   elements, then rules switch to it in a single kernel transaction. If loading
   fails, the previous rules stay active.
 - Stores bans in sorted plain-text files: one file per `/16` for hosts, one file
   for subnets.
 - Normalizes input: `192.0.2.77/24` is saved as `192.0.2.0/24`, and
-  `192.0.2.10/32` is saved as `192.0.2.10`.
+  `192.0.2.10/32` is saved as `192.0.2.10`. Prefix `/0` is rejected to prevent
+  accidentally blocking all IPv4 traffic.
 - Serializes concurrent invocations with `flock`.
 
 IPv6 is not supported.
@@ -30,8 +31,8 @@ IPv6 is not supported.
 - Bash
 - `nft` and a kernel that support the `destroy` command
 - `flock` (util-linux), GNU coreutils, `awk`, `xargs`, `grep`
-- Root privileges for every command except `list`; `sudo` is used in hints if
-  available
+- Root privileges for every command except `list` and `check`; `sudo` is used in
+  hints if available
 
 On Debian and Ubuntu, `nfban init` installs missing `nftables` and `util-linux`
 packages with `apt-get`. On other systems install them manually.
@@ -85,7 +86,7 @@ creates its own table and does not need it.
 ## Usage
 
 ```text
-nfban <init|reload|add|remove|rm|list|status> [argument]
+nfban <init|reload|add|remove|rm|check|list|status> [argument]
 ```
 
 Every command accepts `-h` or `--help`.
@@ -95,15 +96,17 @@ symbols. Colors are disabled when the stream is not a terminal, `TERM=dumb`, or
 [`NO_COLOR`](https://no-color.org) is set. Symbols fall back to ASCII unless the
 locale is UTF-8. Errors go to stderr and suggest a command to run next.
 
-| Command               | Description                                             |
-| --------------------- | ------------------------------------------------------- |
-| `init`                | Install packages, create storage, enable the unit       |
-| `reload`              | Rebuild live sets from saved bans and switch atomically |
-| `add <IPv4\|CIDR>`    | Ban an address or subnet, live and on disk              |
-| `add --batch`         | Ban addresses and subnets read from stdin               |
-| `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)     |
-| `list`                | Print saved bans in numeric order (no root needed)      |
-| `status`              | Show ban counts and the state of live rules             |
+| Command               | Description                                              |
+| --------------------- | -------------------------------------------------------- |
+| `init`                | Install packages, create storage, enable the unit        |
+| `reload`              | Rebuild live sets from saved bans and switch atomically  |
+| `add <IPv4\|CIDR>`    | Ban an address or subnet, live and on disk               |
+| `add --batch`         | Ban addresses and subnets read from stdin                |
+| `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)      |
+| `remove --batch`      | Remove exact bans read from stdin (alias: `rm --batch`)  |
+| `check <IPv4\|CIDR>`  | Check if an address or subnet is banned (no root needed) |
+| `list`                | Print saved bans in numeric order (no root needed)       |
+| `status`              | Show ban counts and the state of live rules              |
 
 ### Examples
 
@@ -112,7 +115,9 @@ sudo nfban add 192.0.2.10
 sudo nfban add 198.51.100.0/24
 sudo nfban add --batch < bans.txt
 sudo nfban rm 192.0.2.10
-sudo nfban list
+sudo nfban rm --batch < unbans.txt
+nfban check 198.51.100.42
+nfban list
 sudo nfban status
 ```
 
@@ -124,7 +129,8 @@ sudo nfban status
   ban adds a missing live element; running `remove` for an unsaved ban removes
   a stray one.
 - `remove` deletes only the exact entry. Removing `192.0.2.10` does not affect
-  a saved `192.0.2.0/24`, and the reverse is also true.
+  a saved `192.0.2.0/24`, and the reverse is also true. When the last host in a
+  `/16` file is removed, the empty file is deleted.
 - A new subnet must not overlap any saved subnet.
 - A host inside a saved subnet is not saved again: `add` reports the covering
   subnet and only restores it in the live set if it is missing. Hosts saved
@@ -132,26 +138,44 @@ sudo nfban status
 - `add` and `remove` need active rules. If none exist, run `nfban reload` or
   `systemctl start nfban`.
 
-### Adding in batches
+### Batch operations
 
-`nfban add --batch` reads one address or subnet per line from stdin. On a
-terminal, paste the list and press Ctrl-D. Surrounding whitespace and `\r` are
-trimmed; blank lines and `#` comments are skipped.
+`nfban add --batch` and `nfban remove --batch` (or `rm --batch`) read one
+address or subnet per line from stdin. On a terminal, paste the list and press
+Ctrl-D. Surrounding whitespace and `\r` are trimmed; blank lines and `#`
+comments are skipped.
 
 ```sh
 sudo nfban add --batch < bans.txt
+sudo nfban rm --batch < unbans.txt
 ```
 
-- Every line is checked first. If any line is invalid or a subnet overlaps a
-  saved subnet or another subnet in the list, all such lines are reported with
-  their line numbers and nothing is added.
-- Duplicates, already saved bans and hosts inside a saved or listed subnet are
-  skipped, the same way as with a single `add`.
-- The live sets are updated in batches of 4096 elements, then every `/16` file
-  that gains hosts is rewritten once. If the live update fails, nothing on disk
-  changes; run `nfban reload` to drop elements loaded before the failure.
-- The summary shows new hosts, new subnets, already banned entries and hosts
-  covered by subnets.
+- Every line is checked first. If any line is invalid or (for `add --batch`) a
+  subnet overlaps a saved subnet or another subnet in the list, all such lines
+  are reported with their line numbers and nothing changes.
+- `add --batch` skips duplicates, already saved bans and hosts inside a saved or
+  listed subnet, the same way as a single `add`.
+- `remove --batch` removes only exact matches and deletes `/16` files that
+  become empty.
+- The live sets are updated in batches of 16384 elements, then every touched
+  `/16` file is rewritten once. If the live update fails, nothing on disk
+  changes; run `nfban reload` to resync the live sets.
+
+### Checking a ban
+
+`nfban check <IPv4|CIDR>` checks saved bans without requiring root. It exits `0`
+if the address or subnet is saved directly or covered by a saved subnet, and `1`
+otherwise.
+
+When stdout is not a terminal, it prints `key=value` lines:
+
+```text
+banned=yes
+match=subnet
+entry=198.51.100.0/24
+```
+
+or `banned=no` when not banned.
 
 ### Status
 
