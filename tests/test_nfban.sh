@@ -23,6 +23,7 @@ sed \
   -e "s|^readonly config=/etc/nfban$|readonly config=$config_dir|" \
   -e "s|^readonly unit=/etc/systemd/system/nfban.service$|readonly unit=$unit_file|" \
   -e 's|((EUID != 0))|((0))|g' \
+  -e 's|^check_script_owner() {|check_script_owner() { return 0;|' \
   "$repo_root/nfban" >"$test_nfban"
 chmod +x -- "$test_nfban"
 
@@ -212,7 +213,7 @@ assert_fail() {
 }
 
 reset_state() {
-  rm -rf -- "$config_dir/hosts"/* "$nft_state"/*
+  rm -rf -- "${config_dir:?}/hosts"/* "${nft_state:?}"/*
   : >"$config_dir/cidrs.txt"
   : >"$nft_log"
 }
@@ -305,8 +306,39 @@ assert_ok 'previous rules stay active after failed reload' "$test_nfban" status 
 
 # 12. add --batch rejects non-regular file in hosts/
 ln -s /dev/null "$config_dir/hosts/198.051.txt"
-assert_fail 'add --batch rejects symlink in hosts/' bash -c 'printf "198.51.100.1\n" | "$1" add --batch >/dev/null 2>&1' _ "$test_nfban"
+assert_fail 'add --batch rejects symlink in hosts/' "$test_nfban" add --batch <<<'198.51.100.1' >/dev/null 2>&1
 rm -f -- "$config_dir/hosts/198.051.txt"
+
+# 13. self-update: up-to-date, invalid payload rejection, atomic replacement
+cat >"$mock_bin/curl" <<'MOCK_CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+out=
+while (($#)); do
+  case $1 in
+    -o) out=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp -- "${MOCK_UPDATE_SRC:?}" "$out"
+MOCK_CURL
+chmod +x -- "$mock_bin/curl"
+
+export MOCK_UPDATE_SRC=$tmpdir/update_src
+cp -- "$test_nfban" "$tmpdir/nfban.orig"
+cp -- "$test_nfban" "$MOCK_UPDATE_SRC"
+out=$("$test_nfban" self-update)
+assert_eq '+ Already up to date' "$out" 'self-update reports already up to date'
+
+printf '<html>404</html>\n' >"$MOCK_UPDATE_SRC"
+assert_fail 'self-update rejects non-bash download' "$test_nfban" self-update >/dev/null 2>&1
+assert_ok 'self-update preserves script on invalid download' cmp -s -- "$test_nfban" "$tmpdir/nfban.orig"
+
+printf '#!/usr/bin/env bash\n# updated\necho updated\n' >"$MOCK_UPDATE_SRC"
+out=$("$test_nfban" self-update)
+assert_ok 'self-update reports updated path' grep -Fq "+ Updated $test_nfban" <<<"$out"
+assert_ok 'self-update replaces script content' cmp -s -- "$MOCK_UPDATE_SRC" "$test_nfban"
+assert_ok 'self-update keeps script executable' test -x "$test_nfban"
 
 printf 'Passed: %d, Failed: %d\n' "$pass" "$fail"
 ((fail == 0))

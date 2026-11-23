@@ -31,6 +31,7 @@ IPv6 is not supported.
 - Bash
 - `nft` and a kernel that support the `destroy` command
 - `flock` (util-linux), GNU coreutils, `awk`, `xargs`, `grep`
+- `curl` or `wget` (for `setup.sh` and `self-update`)
 - Root privileges for every command except `list` and `check`; `sudo` is used in
   hints if available
 
@@ -39,10 +40,18 @@ packages with `apt-get`. On other systems install them manually.
 
 ## Installation
 
-Install the script at a stable path. `init` writes this path into the systemd
-unit, so the path must contain only letters, digits, `_`, `.`, `/` and `-`.
-The unit runs the script as root at boot, so the script and every directory
-above it must be owned by root and writable only by root.
+Quick install (downloads `nfban` to `/usr/local/sbin/nfban`, runs `nfban init`,
+and starts `nfban.service`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dgavrilov/nfban/master/setup.sh | sudo sh
+```
+
+Or install manually from a local copy. Place the script at a stable path: `init`
+writes this path into the systemd unit, so the path must contain only letters,
+digits, `_`, `.`, `/` and `-`. The unit runs the script as root at boot, so the
+script and every directory above it must be owned by root and writable only by
+root.
 
 ```sh
 sudo install -m 755 nfban /usr/local/sbin/nfban
@@ -86,7 +95,7 @@ creates its own table and does not need it.
 ## Usage
 
 ```text
-nfban <init|reload|add|remove|rm|check|list|status> [argument]
+nfban <init|reload|add|remove|rm|check|list|status|self-update> [argument]
 ```
 
 Every command accepts `-h` or `--help`.
@@ -107,6 +116,7 @@ locale is UTF-8. Errors go to stderr and suggest a command to run next.
 | `check <IPv4\|CIDR>`  | Check if an address or subnet is banned (no root needed) |
 | `list`                | Print saved bans in numeric order (no root needed)       |
 | `status`              | Show ban counts and the state of live rules              |
+| `self-update`         | Download the latest version and replace the script       |
 
 ### Examples
 
@@ -119,6 +129,7 @@ sudo nfban rm --batch < unbans.txt
 nfban check 198.51.100.42
 nfban list
 sudo nfban status
+sudo nfban self-update
 ```
 
 ### Adding and removing
