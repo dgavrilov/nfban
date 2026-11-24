@@ -284,6 +284,27 @@ assert_ok 'batch remove summary not saved' grep -q 'Not saved[[:space:]]*1' <<<"
 assert_eq '' "$("$test_nfban" list)" 'list empty after batch remove'
 assert_fail 'empty /16 file deleted after batch remove' test -e "$config_dir/hosts/198.051.txt"
 
+# 8a. remove --dedupe drops hosts covered by subnets, live and on disk
+printf '198.51.100.7\n198.51.100.200\n203.0.113.5\n203.0.113.9\n' | "$test_nfban" add --batch >/dev/null
+"$test_nfban" add 198.51.100.0/25 >/dev/null
+"$test_nfban" add 203.0.113.0/24 >/dev/null
+# Drop a covering subnet from the live set: dedupe must restore it before
+# removing its hosts.
+for set_file in "$nft_state"/sets/blocked_cidrs*; do
+  grep -Fxv '203.0.113.0/24' "$set_file" >"$set_file.tmp" || :
+  mv -f -- "$set_file.tmp" "$set_file"
+done
+out=$("$test_nfban" rm --dedupe)
+assert_eq '+ Removed 3 host(s) covered by subnets' "$out" 'dedupe summary'
+assert_ok 'dedupe restores missing live subnet' grep -rFxq 203.0.113.0/24 "$nft_state/sets"
+assert_eq $'198.51.100.0/25\n198.51.100.200\n203.0.113.0/24' "$("$test_nfban" list)" 'list after dedupe'
+assert_fail 'dedupe deletes emptied /16 file' test -e "$config_dir/hosts/203.000.txt"
+assert_fail 'dedupe removes covered host from live set' grep -rFxq 203.0.113.5 "$nft_state/sets"
+assert_ok 'dedupe keeps uncovered host in live set' grep -rFxq 198.51.100.200 "$nft_state/sets"
+out=$("$test_nfban" rm --dedupe)
+assert_eq '+ No hosts covered by subnets' "$out" 'dedupe is a no-op when nothing is covered'
+printf '198.51.100.0/25\n198.51.100.200\n203.0.113.0/24\n' | "$test_nfban" rm --batch >/dev/null
+
 # 9. list | head produces no SIGPIPE stderr noise
 for i in $(seq 1 50); do
   printf '10.%d.0.1\n' "$i"

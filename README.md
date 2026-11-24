@@ -113,6 +113,7 @@ locale is UTF-8. Errors go to stderr and suggest a command to run next.
 | `add --batch`         | Ban addresses and subnets read from stdin                |
 | `remove <IPv4\|CIDR>` | Remove an exact ban, live and on disk (alias: `rm`)      |
 | `remove --batch`      | Remove exact bans read from stdin (alias: `rm --batch`)  |
+| `remove --dedupe`     | Remove hosts covered by saved subnets (alias: `rm`)      |
 | `check <IPv4\|CIDR>`  | Check if an address or subnet is banned (no root needed) |
 | `list`                | Print saved bans in numeric order (no root needed)       |
 | `status`              | Show ban counts and the state of live rules              |
@@ -126,6 +127,7 @@ sudo nfban add 198.51.100.0/24
 sudo nfban add --batch < bans.txt
 sudo nfban rm 192.0.2.10
 sudo nfban rm --batch < unbans.txt
+sudo nfban rm --dedupe
 nfban check 198.51.100.42
 nfban list
 sudo nfban status
@@ -145,7 +147,10 @@ sudo nfban self-update
 - A new subnet must not overlap any saved subnet.
 - A host inside a saved subnet is not saved again: `add` reports the covering
   subnet and only restores it in the live set if it is missing. Hosts saved
-  before their subnet was added stay in the host files.
+  before their subnet was added stay in the host files until
+  `nfban rm --dedupe` removes them from the live set and the host files. It
+  first restores the covering subnets in the live set if they are missing, so
+  the hosts stay banned throughout.
 - `add` and `remove` need active rules. If none exist, run `nfban reload` or
   `systemctl start nfban`.
 

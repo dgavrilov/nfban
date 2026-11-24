@@ -112,11 +112,14 @@ Nothing is added if any line is invalid or a subnet overlaps another one.' \
       ;;
     remove)
       command_help 'nfban <remove|rm> <IPv4|CIDR>
-  nfban <remove|rm> --batch' \
+  nfban <remove|rm> --batch
+  nfban <remove|rm> --dedupe' \
         'Removes only the exact ban, not any covering subnet. With --batch, reads
 one address or subnet per line from stdin; blank lines and # comments are
-skipped. Nothing is removed if any line is invalid.' \
-        'nfban rm 192.0.2.10' 'nfban rm 192.0.2.0/24' 'nfban rm --batch < unbans.txt'
+skipped. Nothing is removed if any line is invalid. With --dedupe, removes
+saved hosts that are already covered by a saved subnet.' \
+        'nfban rm 192.0.2.10' 'nfban rm 192.0.2.0/24' 'nfban rm --batch < unbans.txt' \
+        'nfban rm --dedupe'
       ;;
     check)
       command_help 'nfban check <IPv4|CIDR>' \
@@ -152,6 +155,7 @@ Prints key=value lines when stdout is not a terminal.' \
       command_row 'add --batch' 'Ban addresses and subnets from stdin'
       command_row 'remove, rm <IPv4|CIDR>' 'Remove an exact ban'
       command_row 'remove, rm --batch' 'Remove exact bans from stdin'
+      command_row 'remove, rm --dedupe' 'Remove hosts covered by subnets'
       command_row 'check <IPv4|CIDR>' 'Check if an address or subnet is banned'
       command_row 'list' 'Print saved bans in numeric order'
       command_row 'status' 'Show ban counts and live rule state'
@@ -936,6 +940,95 @@ batch_remove() {
     'Not saved' "$((hosts_live - hosts_removed + cidrs_live - subnets_removed))"
 }
 
+# remove --dedupe: removes saved hosts covered by a saved subnet from the live
+# set and rewrites or deletes only the touched /16 files. The covering subnets
+# are restored in the live set first, so the hosts never become unbanned.
+dedupe_hosts() {
+  local active removed files delete_list=() name
+  active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
+  temp=$(mktemp -d -- "$config/batch.XXXXXX")
+  mkdir -- "$temp/hosts"
+  : >"$temp/hosts.live"
+  : >"$temp/cidrs.live"
+  : >"$temp/hosts.delete"
+  list_host_files "$temp/existing"
+
+  # Host files and subnets are both in numeric order, so one merge pass finds
+  # every covered host; it stops once the subnets run out.
+  removed=$(
+    awk -v cidrs="$cidrs" -v saved="$hosts" -v existing="$temp/existing" \
+      -v dir="$temp/hosts" -v live="$temp/hosts.live" -v cidrs_live="$temp/cidrs.live" \
+      -v del="$temp/hosts.delete" -v error="$awk_error" "$ip_key"'
+      function fail(path) {
+        print error "cannot read " path > "/dev/stderr"
+        exit 1
+      }
+      function advance(  subnet, fields, r) {
+        if ((r = (getline subnet < cidrs)) < 0) fail(cidrs)
+        if (r) {
+          current = subnet
+          split(subnet, fields, "/")
+          start = key(subnet)
+          end = start + 2^(32 - fields[2])
+        } else {
+          start = end = 2^33
+        }
+      }
+      BEGIN {
+        advance()
+        while (start < 2^33 && (getline group < existing) > 0) {
+          target = saved "/" group
+          count = j = 0
+          while ((r = (getline line < target)) > 0) {
+            value = key(line)
+            while (value >= end) advance()
+            if (value >= start) {
+              print line > live
+              count++
+              if (current != covering) { print current > cidrs_live; covering = current }
+            } else kept[++j] = line
+          }
+          close(target)
+          if (r < 0) fail(target)
+          if (!count) continue
+          if (j) {
+            for (i = 1; i <= j; i++) print kept[i] > (dir "/" group)
+            close(dir "/" group)
+          } else {
+            print group > del
+          }
+          removed += count
+        }
+        print removed + 0
+      }
+    '
+  ) || die 'failed to read saved bans; nothing was removed'
+  if ((removed == 0)); then
+    success 'No hosts covered by subnets'
+    return
+  fi
+
+  if ! load_batches "blocked_cidrs$active" <"$temp/cidrs.live" \
+    || ! load_batches "blocked$active" destroy <"$temp/hosts.live"; then
+    die 'nftables update failed; saved bans were not changed' "${sudo_prefix}nfban reload"
+  fi
+  files=("$temp"/hosts/*.txt)
+  sync_files "$temp" "${files[@]}"
+  if ((${#files[@]})); then
+    printf '%s\0' "${files[@]}" | xargs -0 mv -f -t "$hosts" -- \
+      || die 'live bans changed but saving failed; retry the command'
+  fi
+  if [[ -s $temp/hosts.delete ]]; then
+    while IFS= read -r name; do
+      delete_list+=("$hosts/$name")
+    done <"$temp/hosts.delete"
+    printf '%s\0' "${delete_list[@]}" | xargs -0 rm -f -- \
+      || die 'live bans changed but saving failed; retry the command'
+  fi
+  sync -- "$hosts"
+  success "Removed $bold$removed$reset host(s) covered by subnets"
+}
+
 check_ban() {
   local file covering match='' entry=''
   if ((prefix == 32)); then
@@ -1060,7 +1153,7 @@ self_update() {
 }
 
 main() {
-  local command=${1-} address prefix network run batch=
+  local command=${1-} address prefix network run batch='' dedupe=''
   # Frame terminal output with blank lines; cleanup closes the frame.
   if [[ -t 1 ]]; then
     printf '\n'
@@ -1086,6 +1179,8 @@ main() {
     add | remove)
       if (($# == 1)) && [[ $1 == --batch ]]; then
         batch=1
+      elif (($# == 1)) && [[ $command == remove && $1 == --dedupe ]]; then
+        dedupe=1
       else
         (($# == 1)) \
           || die 'expected one IPv4 address or CIDR' "${sudo_prefix}nfban $command 192.0.2.10"
@@ -1135,7 +1230,13 @@ main() {
       if [[ -n $batch ]]; then batch_add; else change_ban add; fi
       ;;
     remove)
-      if [[ -n $batch ]]; then batch_remove; else change_ban remove; fi
+      if [[ -n $batch ]]; then
+        batch_remove
+      elif [[ -n $dedupe ]]; then
+        dedupe_hosts
+      else
+        change_ban remove
+      fi
       ;;
     check) check_ban ;;
     reload) reload ;;
