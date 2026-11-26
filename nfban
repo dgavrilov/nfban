@@ -11,6 +11,7 @@ umask 022
 readonly config=/etc/nfban
 readonly hosts=$config/hosts
 readonly cidrs=$config/cidrs.txt
+readonly allow=$config/allow.txt
 readonly unit=/etc/systemd/system/nfban.service
 readonly update_url='https://raw.githubusercontent.com/dgavrilov/nfban/master/nfban'
 readonly nft_table='inet nfban'
@@ -99,43 +100,54 @@ nfban.service without starting it.' \
       ;;
     reload)
       command_help 'nfban reload' \
-        'Atomically switches to a new copy of the bans loaded in batches.' \
+        'Atomically switches to a new copy of the bans and the allowlist loaded in
+batches.' \
         'nfban reload'
       ;;
-    add)
-      command_help 'nfban add <IPv4|CIDR>
-  nfban add --batch' \
-        'Bans an address or subnet live and saves it. With --batch, reads one
-address or subnet per line from stdin; blank lines and # comments are skipped.
-Nothing is added if any line is invalid or a subnet overlaps another one.' \
-        'nfban add 192.0.2.10' 'nfban add 198.51.100.0/24' 'nfban add --batch < bans.txt'
+    block)
+      command_help 'nfban block add <IPv4|CIDR>
+  nfban block add --batch
+  nfban block <remove|rm> <IPv4|CIDR>
+  nfban block <remove|rm> --batch
+  nfban block <remove|rm> --dedupe
+  nfban block list' \
+        'add bans an address or subnet live and saves it; a host inside a saved subnet
+is not saved again. add warns when the allowlist overrides the new ban. remove
+deletes only the exact ban, not any covering subnet. --dedupe removes saved
+hosts already covered by a saved subnet. With --batch, reads one address or
+subnet per line from stdin; blank lines and # comments are skipped. Nothing
+changes if any line is invalid or a new subnet overlaps another one. list
+prints saved bans in numeric order and needs no root.' \
+        'nfban block add 192.0.2.10' 'nfban block add 198.51.100.0/24' \
+        'nfban block add --batch < bans.txt' 'nfban block rm 192.0.2.10' \
+        'nfban block rm --dedupe' 'nfban block list | wc -l'
       ;;
-    remove)
-      command_help 'nfban <remove|rm> <IPv4|CIDR>
-  nfban <remove|rm> --batch
-  nfban <remove|rm> --dedupe' \
-        'Removes only the exact ban, not any covering subnet. With --batch, reads
-one address or subnet per line from stdin; blank lines and # comments are
-skipped. Nothing is removed if any line is invalid. With --dedupe, removes
-saved hosts that are already covered by a saved subnet.' \
-        'nfban rm 192.0.2.10' 'nfban rm 192.0.2.0/24' 'nfban rm --batch < unbans.txt' \
-        'nfban rm --dedupe'
+    allow)
+      command_help 'nfban allow add <IPv4|CIDR>
+  nfban allow add --batch
+  nfban allow <remove|rm> <IPv4|CIDR>
+  nfban allow <remove|rm> --batch
+  nfban allow list' \
+        'Allowlisted addresses and subnets are accepted before bans are checked, so
+they override bans without changing them. Entries must not overlap each other.
+remove deletes only the exact entry. With --batch, reads one address or subnet
+per line from stdin; blank lines and # comments are skipped. Nothing changes if
+any line is invalid or overlaps another entry. list prints the allowlist in
+numeric order and needs no root.' \
+        'nfban allow add 192.0.2.10' 'nfban allow add 198.51.100.0/24' \
+        'nfban allow add --batch < allow.txt' 'nfban allow rm 192.0.2.10' \
+        'nfban allow list'
       ;;
     check)
       command_help 'nfban check <IPv4|CIDR>' \
-        'Checks whether an address or subnet is saved or covered by a saved subnet.
-Exits 0 if banned, 1 otherwise. Prints key=value lines when stdout is not a
-terminal.' \
+        'Checks whether an address or subnet is banned by a saved entry and whether
+an allowlist entry fully covers it. Exits 0 only if it is blocked: banned and
+not allowlisted. Prints key=value lines when stdout is not a terminal.' \
         'nfban check 192.0.2.10' 'nfban check 198.51.100.0/24'
-      ;;
-    list)
-      command_help 'nfban list' \
-        'Lists saved bans in numeric order, one per line.' \
-        'nfban list' 'nfban list | wc -l'
       ;;
     status)
       command_help 'nfban status' \
-        'Shows ban counts and live availability.
+        'Shows ban and allowlist counts and live availability.
 Prints key=value lines when stdout is not a terminal.' \
         'nfban status'
       ;;
@@ -145,25 +157,30 @@ Prints key=value lines when stdout is not a terminal.' \
         'nfban self-update'
       ;;
     *)
-      printf '%s\n\n' 'Manage permanent IPv4 bans in nftables.'
+      printf '%s\n\n' 'Manage permanent IPv4 bans and an allowlist in nftables.'
       heading Usage
-      printf '  %s\n\n' 'nfban <command> [argument]'
+      printf '  %s\n\n' 'nfban <command> [subcommand] [argument]'
       heading Commands
       command_row 'init' 'Install packages, create storage, enable nfban.service'
-      command_row 'reload' 'Atomically reload saved bans'
-      command_row 'add <IPv4|CIDR>' 'Ban an address or subnet'
-      command_row 'add --batch' 'Ban addresses and subnets from stdin'
-      command_row 'remove, rm <IPv4|CIDR>' 'Remove an exact ban'
-      command_row 'remove, rm --batch' 'Remove exact bans from stdin'
-      command_row 'remove, rm --dedupe' 'Remove hosts covered by subnets'
-      command_row 'check <IPv4|CIDR>' 'Check if an address or subnet is banned'
-      command_row 'list' 'Print saved bans in numeric order'
-      command_row 'status' 'Show ban counts and live rule state'
+      command_row 'reload' 'Atomically reload saved bans and the allowlist'
+      command_row 'block add <IPv4|CIDR>' 'Ban an address or subnet'
+      command_row 'block add --batch' 'Ban addresses and subnets from stdin'
+      command_row 'block rm <IPv4|CIDR>' 'Remove an exact ban'
+      command_row 'block rm --batch' 'Remove exact bans from stdin'
+      command_row 'block rm --dedupe' 'Remove hosts covered by subnets'
+      command_row 'block list' 'Print saved bans in numeric order'
+      command_row 'allow add <IPv4|CIDR>' 'Allowlist an address or subnet'
+      command_row 'allow add --batch' 'Allowlist addresses and subnets from stdin'
+      command_row 'allow rm <IPv4|CIDR>' 'Remove an exact allowlist entry'
+      command_row 'allow rm --batch' 'Remove exact allowlist entries from stdin'
+      command_row 'allow list' 'Print the allowlist in numeric order'
+      command_row 'check <IPv4|CIDR>' 'Check if an address or subnet is blocked'
+      command_row 'status' 'Show counts and live rule state'
       command_row 'self-update' 'Update nfban to the latest version'
       printf '\n'
       heading Examples
-      printf '  %s%s\n' "$sudo_prefix" 'nfban add 192.0.2.10' \
-        "$sudo_prefix" 'nfban add 198.51.100.0/24' "$sudo_prefix" 'nfban status'
+      printf '  %s%s\n' "$sudo_prefix" 'nfban block add 192.0.2.10' \
+        "$sudo_prefix" 'nfban allow add 198.51.100.0/24' "$sudo_prefix" 'nfban status'
       printf '\n%s%s%s\n' "$dim" "Run 'nfban <command> --help' for details." "$reset"
       ;;
   esac
@@ -180,6 +197,10 @@ die() {
     printf '  %sRun:%s %s\n' "$err_dim" "$err_reset" "$2" >&2
   fi
   exit 1
+}
+
+warn() {
+  printf '%swarning:%s %s\n' "$err_bold" "$err_reset" "$1" >&2
 }
 
 require() {
@@ -299,12 +320,15 @@ init() {
   mkdir -p -- "$hosts"
   # Older versions created the storage readable by root only.
   chmod -R u=rwX,go=rX -- "$config"
-  if [[ ! -e $cidrs ]]; then
-    (
-      set -o noclobber
-      : >"$cidrs"
-    )
-  fi
+  local file
+  for file in "$cidrs" "$allow"; do
+    if [[ ! -e $file ]]; then
+      (
+        set -o noclobber
+        : >"$file"
+      )
+    fi
+  done
   if ! write_unit "$script" | cmp -s -- - "$unit"; then
     mkdir -p -- "${unit%/*}"
     write_unit "$script" >"$unit"
@@ -322,6 +346,11 @@ read_hosts() {
   for ((i = 0; i < ${#files[@]}; i += 1000)); do
     cat -- "${files[@]:i:1000}" || return
   done
+}
+
+# Installs from older versions have no allowlist file until it is needed.
+read_allow() {
+  if [[ -e $allow ]]; then cat -- "$allow"; fi
 }
 
 list_bans() {
@@ -365,7 +394,8 @@ load_batches() {
   awk -v name="$name" -v action="$action" -v table="$nft_table" \
     -v size="$batch_size" -v error="$awk_error" '
     BEGIN {
-      is_cidr = (name ~ /^blocked_cidrs/)
+      # The allowlist mixes hosts and subnets in one interval set.
+      mode = name ~ /^blocked_cidrs/ ? "cidr" : name ~ /^allowed/ ? "mixed" : "host"
       cmd = "nft -f -"
     }
     function invalid() {
@@ -375,11 +405,11 @@ load_batches() {
     }
     {
       fields = split($0, a, /[.\/]/)
-      if (fields != (is_cidr ? 5 : 4)) invalid()
+      if (mode == "cidr" ? fields != 5 : mode == "host" ? fields != 4 : fields != 4 && fields != 5) invalid()
       for (i = 1; i <= fields; ++i)
         if (a[i] !~ /^(0|[1-9][0-9]*)$/ || (i == 5 ? (a[i] < 1 || a[i] > 31) : a[i] > 255)) invalid()
       value = ((a[1]*256 + a[2])*256 + a[3])*256 + a[4]
-      width = is_cidr ? 2^(32 - a[5]) : 1
+      width = fields == 5 ? 2^(32 - a[5]) : 1
       if (value % width || (NR > 1 && value < end)) invalid()
       end = value + width
       if ((NR - 1) % size == 0) printf "%s element %s %s { ", action, table, name | cmd
@@ -403,6 +433,7 @@ discard_sets() {
   nft -f - <<NFT
 destroy set $nft_table blocked$1
 destroy set $nft_table blocked_cidrs$1
+destroy set $nft_table allowed$1
 NFT
 }
 
@@ -420,23 +451,29 @@ reload() {
 add table $nft_table
 destroy set $nft_table blocked$next
 destroy set $nft_table blocked_cidrs$next
+destroy set $nft_table allowed$next
 add set $nft_table blocked$next { type ipv4_addr; }
 add set $nft_table blocked_cidrs$next { type ipv4_addr; flags interval; }
+add set $nft_table allowed$next { type ipv4_addr; flags interval; }
 NFT
   if ! read_hosts | load_batches "blocked$next" \
-    || ! load_batches "blocked_cidrs$next" <"$cidrs"; then
+    || ! load_batches "blocked_cidrs$next" <"$cidrs" \
+    || ! read_allow | load_batches "allowed$next"; then
     discard_sets "$next" || :
     die 'batch load failed; previous rules were left in place'
   fi
   # Rules and set references change in the same kernel transaction. Priority
-  # raw drops banned packets before conntrack, so they create no state.
+  # raw drops banned packets before conntrack, so they create no state. The
+  # allowlist accept ends only this chain; other tables still see the packet.
   if ! nft -f - <<NFT
 add chain $nft_table prerouting { type filter hook prerouting priority raw; policy accept; }
 flush chain $nft_table prerouting
+add rule $nft_table prerouting ip saddr @allowed$next accept
 add rule $nft_table prerouting ip saddr @blocked$next drop
 add rule $nft_table prerouting ip saddr @blocked_cidrs$next drop
 ${legacy}destroy set $nft_table blocked$active
 destroy set $nft_table blocked_cidrs$active
+destroy set $nft_table allowed$active
 NFT
   then
     discard_sets "$next" || :
@@ -450,8 +487,10 @@ update_element() {
   if [[ $action == add ]]; then
     nft add element inet nfban "$set_name" "{ $value }"
   elif ! error=$(nft destroy element inet nfban "$set_name" "{ $value }" 2>&1); then
-    # nft may reject a missing exact CIDR before its idempotent destroy reaches the kernel.
-    if [[ $set_name != blocked_cidrs* || $error != 'Error: element does not exist'$'\n'* ]]; then
+    # nft may reject a missing exact element of an interval set before its
+    # idempotent destroy reaches the kernel.
+    if [[ ! ($set_name == blocked_cidrs* || $set_name == allowed*)
+      || $error != 'Error: element does not exist'$'\n'* ]]; then
       printf '%s\n' "$error" >&2
       return 1
     fi
@@ -464,13 +503,11 @@ insert_ban() {
     BEGIN { target_end = target + 2^(32 - prefix) }
     !done {
       current = key($0)
-      if (prefix < 32) {
-        split($0, fields, "/")
-        if (current < target_end && target < current + 2^(32 - fields[2])) {
-          print error "CIDR overlaps saved " $0 > "/dev/stderr"
-          conflict = 1
-          exit 1
-        }
+      width = (split($0, fields, "/") == 2) ? 2^(32 - fields[2]) : 1
+      if (current < target_end && target < current + width) {
+        print error address " overlaps saved " $0 > "/dev/stderr"
+        conflict = 1
+        exit 1
       }
       if (!inserted && current > target) { print address; inserted = 1 }
       if (inserted && (prefix == 32 || current >= target_end)) done = 1
@@ -480,35 +517,93 @@ insert_ban() {
   ' "$1"
 }
 
-# Prints the saved subnet containing the address or subnet, if any.
-covering_subnet() {
+# covering_entry FILE: prints the saved host or subnet in FILE containing the
+# address or subnet, if any.
+covering_entry() {
   awk -v target="$network" -v prefix="$prefix" "$ip_key"'
     BEGIN { target_end = target + 2^(32 - prefix) }
-    { split($0, fields, "/"); start = key($0) }
+    { start = key($0); width = (split($0, fields, "/") == 2) ? 2^(32 - fields[2]) : 1 }
     start > target { exit }
-    target_end <= start + 2^(32 - fields[2]) { print; exit }
-  ' "$cidrs"
+    target_end <= start + width { print; exit }
+  ' "$1"
 }
 
-change_ban() {
-  local action=$1 file source active set_name saved covering
-  active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
-  if [[ $action == add ]] && ((prefix == 32)); then
-    covering=$(covering_subnet)
-    if [[ -n $covering ]]; then
-      # Like any repeated add, this restores a missing live element.
-      update_element add "blocked_cidrs$active" "$covering" \
-        || die 'nftables update failed'
-      success "Already banned by subnet $bold$covering$reset"
-      return
-    fi
+# Prints the allowlist entry containing the address or subnet, if any.
+allowed_by() {
+  if [[ -e $allow ]]; then covering_entry "$allow"; fi
+}
+
+# warn_allowed ENTRY: warns that an allowlist entry overrides the new ban.
+warn_allowed() {
+  if [[ -n $1 ]]; then
+    warn "$address is allowlisted by $1; the ban has no effect"
   fi
-  if ((prefix == 32)); then
-    printf -v file '%s/%03d.%03d.txt' "$hosts" "$((network >> 24))" "$((network >> 16 & 255))"
-    set_name=blocked$active
+}
+
+# Live rules loaded by versions without the allowlist lack its set until reload.
+require_allowed_set() {
+  nft -t list set inet nfban "allowed$1" >/dev/null 2>&1 \
+    || die 'live rules have no allowlist' "${sudo_prefix}nfban reload"
+}
+
+# Counts entries on stdin, in numeric order, fully covered by an allowlist entry.
+count_allowed() {
+  awk -v allow="$allow" -v error="$awk_error" "$ip_key"'
+    function range(entry,  fields) {
+      first = key(entry)
+      last = first + ((split(entry, fields, "/") == 2) ? 2^(32 - fields[2]) : 1)
+    }
+    function advance(  entry, r) {
+      if ((r = (getline entry < allow)) < 0) {
+        print error "cannot read " allow > "/dev/stderr"
+        failed = 1
+        exit 1
+      }
+      if (r) { range(entry); start = first; end = last }
+      else start = end = 2^33
+    }
+    BEGIN { advance() }
+    {
+      range($0)
+      while (end <= first) advance()
+      if (start <= first && last <= end) covered++
+    }
+    END { if (failed) exit 1; print covered + 0 }
+  '
+}
+
+# change_entry block|allow add|remove: changes one live element and its file.
+change_entry() {
+  local scope=$1 action=$2 file source active set_name saved covering allowed='' fixed=1
+  active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
+  if [[ $scope == allow ]]; then
+    require_allowed_set "$active"
+    file=$allow
+    set_name=allowed$active
   else
-    file=$cidrs
-    set_name=blocked_cidrs$active
+    if [[ $action == add ]]; then
+      allowed=$(allowed_by)
+    fi
+    if [[ $action == add ]] && ((prefix == 32)); then
+      covering=$(covering_entry "$cidrs")
+      if [[ -n $covering ]]; then
+        # Like any repeated add, this restores a missing live element.
+        update_element add "blocked_cidrs$active" "$covering" \
+          || die 'nftables update failed'
+        success "Already banned by subnet $bold$covering$reset"
+        warn_allowed "$allowed"
+        return
+      fi
+    fi
+    if ((prefix == 32)); then
+      printf -v file '%s/%03d.%03d.txt' "$hosts" "$((network >> 24))" "$((network >> 16 & 255))"
+      set_name=blocked$active
+      # Emptied /16 files are deleted; the other files always exist.
+      fixed=
+    else
+      file=$cidrs
+      set_name=blocked_cidrs$active
+    fi
   fi
   source=$file
   if [[ ! -e $source && ! -L $source ]]; then
@@ -531,36 +626,38 @@ change_ban() {
     else
       awk -v address="$address" '$0 != address' "$source" >"$temp"
     fi
-    if [[ $action == add || $prefix -lt 32 || -s $temp ]]; then
+    if [[ $action == add || -n $fixed || -s $temp ]]; then
       sync -- "$temp"
     fi
   fi
 
   # Even a no-op on disk repairs a missing or extra live element.
   update_element "$action" "$set_name" "$address" \
-    || die 'nftables update failed; saved bans were not changed'
+    || die "nftables update failed; saved entries were not changed"
   if [[ -n $temp ]]; then
-    if [[ $action == remove && $prefix == 32 && ! -s $temp ]]; then
+    if [[ $action == remove && -z $fixed && ! -s $temp ]]; then
       rm -f -- "$file" \
-        || die 'live ban changed but saving failed; retry the command or run nfban reload'
+        || die 'live entry changed but saving failed; retry the command or run nfban reload'
       rm -f -- "$temp"
       temp=
     else
       mv -fT -- "$temp" "$file" \
-        || die 'live ban changed but saving failed; retry the command or run nfban reload'
+        || die 'live entry changed but saving failed; retry the command or run nfban reload'
       temp=
     fi
     sync -- "${file%/*}"
   fi
-  if [[ $action == add && $saved == 1 ]]; then
-    success "Already banned: $bold$address$reset"
-  elif [[ $action == add ]]; then
-    success "Banned $bold$address$reset"
-  elif [[ $saved == 1 ]]; then
-    success "Removed exact ban $bold$address$reset"
-  else
-    success "No exact ban for $bold$address$reset"
-  fi
+  case $scope/$action/$saved in
+    block/add/1) success "Already banned: $bold$address$reset" ;;
+    block/add/0) success "Banned $bold$address$reset" ;;
+    block/remove/1) success "Removed exact ban $bold$address$reset" ;;
+    block/remove/0) success "No exact ban for $bold$address$reset" ;;
+    allow/add/1) success "Already allowlisted: $bold$address$reset" ;;
+    allow/add/0) success "Allowlisted $bold$address$reset" ;;
+    allow/remove/1) success "Removed exact allowlist entry $bold$address$reset" ;;
+    allow/remove/0) success "No exact allowlist entry for $bold$address$reset" ;;
+  esac
+  warn_allowed "$allowed"
 }
 
 sort_ips() {
@@ -589,7 +686,9 @@ sync_files() {
   fi
 }
 
-# Parses stdin into normalized hosts and CIDRs in one awk pass.
+# Parses stdin into normalized hosts and CIDRs in one awk pass. With line
+# numbers, every entry is followed by its input line. Both outputs may be the
+# same file.
 parse_batch_input() {
   local hosts_out=$1 cidrs_out=$2 with_lines=${3:-1}
   : >"$hosts_out"
@@ -636,13 +735,11 @@ parse_batch_input() {
       d = network % 256; t = int(network / 256)
       c = t % 256; t = int(t / 256)
       b = t % 256; a = int(t / 256)
-      if (prefix == 32) {
-        printf "%d.%d.%d.%d\n", a, b, c, d > hosts_out
-      } else if (with_lines) {
-        printf "%d.%d.%d.%d/%d %d\n", a, b, c, d, prefix, NR > cidrs_out
-      } else {
-        printf "%d.%d.%d.%d/%d\n", a, b, c, d, prefix > cidrs_out
-      }
+      entry = sprintf("%d.%d.%d.%d", a, b, c, d)
+      if (prefix < 32) entry = entry "/" prefix
+      if (with_lines) entry = entry " " NR
+      if (prefix == 32) print entry > hosts_out
+      else print entry > cidrs_out
     }
     END { print invalid + 0 }
   '
@@ -663,10 +760,62 @@ destroy_cidrs_live() {
   done <"$file"
 }
 
+# merge_entries SAVED INPUT MERGED LIVE: merges "entry line" input with the
+# saved entries (line 0) in numeric order. Every entry goes to MERGED, listed
+# ones to LIVE. Fails if two entries overlap; prints "added already".
+merge_entries() {
+  { awk '{ print $0, 0 }' "$1" && cat -- "$2"; } | sort_ips \
+    | awk -v error="$awk_error" -v merged="$3" -v live="$4" "$ip_key"'
+      function describe(entry, line) {
+        return entry " (" (line ? "line " line : "saved") ")"
+      }
+      function finish(  fields, start) {
+        if (addr == "") return
+        start = key(addr)
+        if (have && start < end) {
+          print error describe(addr, line) " overlaps " describe(last, last_line) > "/dev/stderr"
+          bad = 1
+          return
+        }
+        have = 1
+        end = start + ((split(addr, fields, "/") == 2) ? 2^(32 - fields[2]) : 1)
+        last = addr
+        last_line = line
+        print addr > merged
+        if (line) {
+          print addr > live
+          if (saved) already++
+          else added++
+        }
+      }
+      $1 != addr { finish(); addr = $1; line = 0; saved = 0 }
+      $2 == 0 { saved = 1 }
+      $2 != 0 && (!line || $2 < line) { line = $2 }
+      END { finish(); print added + 0, already + 0; exit bad }
+    '
+}
+
+# drop_exact SAVED REMOVE OUT: copies SAVED to OUT without the lines listed in
+# REMOVE and prints how many were dropped. OUT is written only if any were.
+drop_exact() {
+  awk -v remove_file="$2" -v out="$3" '
+    BEGIN {
+      while ((getline c < remove_file) > 0) drop[c] = 1
+      close(remove_file)
+    }
+    ($0 in drop) { removed++; next }
+    { print > out }
+    END {
+      if (removed) printf "" > out
+      print removed + 0
+    }
+  ' "$1"
+}
+
 # add --batch: checks every input line first, then applies the whole list with
 # batched nft loads and one rewrite per touched file.
 batch_add() {
-  local active invalid stats subnets_added subnets_saved
+  local active invalid stats subnets_added subnets_saved allowlisted=0
   local covered hosts_added hosts_live files to_sync=()
   active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
   if [[ -t 0 ]]; then
@@ -683,39 +832,8 @@ batch_add() {
 
   # Saved subnets carry line 0. In numeric order, every subnet must end before
   # the next one starts.
-  stats=$(
-    { awk '{ print $0, 0 }' "$cidrs" && cat -- "$temp/cidrs.in"; } | sort_ips \
-      | awk -v error="$awk_error" -v merged="$temp/cidrs.txt" -v live="$temp/cidrs.live" \
-        "$ip_key"'
-        function describe(subnet, line) {
-          return subnet " (" (line ? "line " line : "saved") ")"
-        }
-        function finish(  fields, start) {
-          if (addr == "") return
-          split(addr, fields, "/")
-          start = key(addr)
-          if (have && start < end) {
-            print error describe(addr, line) " overlaps " describe(last, last_line) > "/dev/stderr"
-            bad = 1
-            return
-          }
-          have = 1
-          end = start + 2^(32 - fields[2])
-          last = addr
-          last_line = line
-          print addr > merged
-          if (line) {
-            print addr > live
-            if (saved) already++
-            else added++
-          }
-        }
-        $1 != addr { finish(); addr = $1; line = 0; saved = 0 }
-        $2 == 0 { saved = 1 }
-        $2 != 0 && (!line || $2 < line) { line = $2 }
-        END { finish(); print added + 0, already + 0; exit bad }
-      '
-  ) || die 'overlapping subnets; nothing was added'
+  stats=$(merge_entries "$cidrs" "$temp/cidrs.in" "$temp/cidrs.txt" "$temp/cidrs.live") \
+    || die 'overlapping subnets; nothing was added'
   read -r subnets_added subnets_saved <<<"$stats"
 
   list_host_files "$temp/existing"
@@ -782,6 +900,10 @@ batch_add() {
   ) || die 'failed to merge host bans; nothing was added'
   read -r covered hosts_added <<<"$stats"
   hosts_live=$(wc -l <"$temp/hosts.live")
+  if [[ -s $allow ]]; then
+    allowlisted=$(sort_ips -- "$temp/hosts.live" "$temp/cidrs.live" | count_allowed) \
+      || die 'cannot read the allowlist; nothing was added'
+  fi
 
   if ! load_batches "blocked$active" <"$temp/hosts.live" \
     || ! load_batches "blocked_cidrs$active" <"$temp/cidrs.live"; then
@@ -807,6 +929,9 @@ batch_add() {
   printf '  %-20s %s\n' 'New hosts' "$hosts_added" 'New subnets' "$subnets_added" \
     'Already banned' "$((hosts_live - hosts_added + subnets_saved))" \
     'Covered by subnets' "$covered"
+  if ((allowlisted)); then
+    warn "$allowlisted listed ban(s) are allowlisted and have no effect"
+  fi
 }
 
 # remove --batch: checks every input line first, then removes exact matches
@@ -834,23 +959,7 @@ batch_remove() {
 
   subnets_removed=0
   if ((cidrs_live)); then
-    subnets_removed=$(
-      awk -v remove_file="$temp/cidrs.live" -v out="$temp/cidrs.txt" '
-        BEGIN {
-          while ((getline c < remove_file) > 0) drop[c] = 1
-          close(remove_file)
-        }
-        ($0 in drop) { removed++; next }
-        { print > out }
-        END {
-          if (removed) close(out)
-          print removed + 0
-        }
-      ' "$cidrs"
-    )
-    if ((subnets_removed)) && [[ ! -e $temp/cidrs.txt ]]; then
-      : >"$temp/cidrs.txt"
-    fi
+    subnets_removed=$(drop_exact "$cidrs" "$temp/cidrs.live" "$temp/cidrs.txt")
   fi
 
   list_host_files "$temp/existing"
@@ -1029,69 +1138,126 @@ dedupe_hosts() {
   success "Removed $bold$removed$reset host(s) covered by subnets"
 }
 
+# allow add --batch: checks every input line first, then loads the entries live
+# and rewrites the allowlist once.
+batch_allow_add() {
+  local active invalid stats added already source=$allow
+  active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
+  require_allowed_set "$active"
+  [[ -e $source ]] || source=/dev/null
+  if [[ -t 0 ]]; then
+    printf '%s\n' 'Paste addresses or subnets, one per line, then press Ctrl-D.' >&2
+  fi
+  temp=$(mktemp -d -- "$config/batch.XXXXXX")
+  : >"$temp/allow.live"
+  invalid=$(parse_batch_input "$temp/in" "$temp/in" 1)
+  ((invalid == 0)) || die "$invalid invalid line(s); nothing was added"
+  [[ -s $temp/in ]] || die 'no addresses in input'
+  stats=$(merge_entries "$source" "$temp/in" "$temp/allow.txt" "$temp/allow.live") \
+    || die 'overlapping entries; nothing was added'
+  read -r added already <<<"$stats"
+
+  load_batches "allowed$active" <"$temp/allow.live" \
+    || die 'nftables update failed; saved allowlist was not changed' "${sudo_prefix}nfban reload"
+  if ((added)); then
+    sync -- "$temp/allow.txt"
+    mv -fT -- "$temp/allow.txt" "$allow" \
+      || die 'live allowlist changed but saving failed; retry the command'
+    sync -- "$config"
+  fi
+  success 'Batch applied'
+  printf '  %-20s %s\n' 'New entries' "$added" 'Already allowlisted' "$already"
+}
+
+# allow remove --batch: removes exact entries live, then rewrites the allowlist.
+batch_allow_remove() {
+  local active invalid listed removed=0
+  active=$(active_suffix) || die 'no active ban rules' "${sudo_prefix}nfban reload"
+  require_allowed_set "$active"
+  if [[ -t 0 ]]; then
+    printf '%s\n' 'Paste addresses or subnets to remove, one per line, then press Ctrl-D.' >&2
+  fi
+  temp=$(mktemp -d -- "$config/batch.XXXXXX")
+  invalid=$(parse_batch_input "$temp/in" "$temp/in" 0)
+  ((invalid == 0)) || die "$invalid invalid line(s); nothing was removed"
+  [[ -s $temp/in ]] || die 'no addresses in input'
+  # A host and a subnet starting at the same address have equal sort keys and
+  # fall back to whole-line order, so uniq still sees every duplicate.
+  sort_ips -- "$temp/in" | uniq >"$temp/allow.live"
+  listed=$(wc -l <"$temp/allow.live")
+  if [[ -e $allow ]]; then
+    removed=$(drop_exact "$allow" "$temp/allow.live" "$temp/allow.txt")
+  fi
+
+  destroy_cidrs_live "allowed$active" "$temp/allow.live" \
+    || die 'nftables update failed; saved allowlist was not changed' "${sudo_prefix}nfban reload"
+  if ((removed)); then
+    sync -- "$temp/allow.txt"
+    mv -fT -- "$temp/allow.txt" "$allow" \
+      || die 'live allowlist changed but saving failed; retry the command'
+    sync -- "$config"
+  fi
+  success 'Batch applied'
+  printf '  %-20s %s\n' 'Removed entries' "$removed" 'Not saved' "$((listed - removed))"
+}
+
 check_ban() {
-  local file covering match='' entry=''
+  local file ban_match='' ban_entry='' allow_match='' allow_entry='' blocked=no
   if ((prefix == 32)); then
     printf -v file '%s/%03d.%03d.txt' "$hosts" "$((network >> 24))" "$((network >> 16 & 255))"
-    if [[ -f $file && ! -L $file ]] && grep -Fxq -- "$address" "$file"; then
-      match=exact
-      entry=$address
-    else
-      covering=$(covering_subnet)
-      if [[ -n $covering ]]; then
-        match=subnet
-        entry=$covering
-      fi
-    fi
   else
-    if grep -Fxq -- "$address" "$cidrs"; then
-      match=exact
-      entry=$address
-    else
-      covering=$(covering_subnet)
-      if [[ -n $covering ]]; then
-        match=subnet
-        entry=$covering
-      fi
-    fi
+    file=$cidrs
   fi
+  if [[ -f $file && ! -L $file ]] && grep -Fxq -- "$address" "$file"; then
+    ban_match=exact
+    ban_entry=$address
+  else
+    ban_entry=$(covering_entry "$cidrs")
+    if [[ -n $ban_entry ]]; then ban_match=subnet; fi
+  fi
+  allow_entry=$(allowed_by)
+  if [[ $allow_entry == "$address" ]]; then
+    allow_match=exact
+  elif [[ -n $allow_entry ]]; then
+    allow_match=subnet
+  fi
+  if [[ -n $ban_match && -z $allow_match ]]; then blocked=yes; fi
 
   if [[ ! -t 1 ]]; then
-    if [[ -n $match ]]; then
-      printf 'banned=yes\nmatch=%s\nentry=%s\n' "$match" "$entry"
-      return 0
+    printf 'blocked=%s\n' "$blocked"
+    if [[ -n $ban_match ]]; then
+      printf 'banned=yes\nban_match=%s\nban_entry=%s\n' "$ban_match" "$ban_entry"
+    else
+      printf 'banned=no\n'
     fi
-    printf 'banned=no\n'
-    return 1
+    if [[ -n $allow_match ]]; then
+      printf 'allowed=yes\nallow_match=%s\nallow_entry=%s\n' "$allow_match" "$allow_entry"
+    else
+      printf 'allowed=no\n'
+    fi
+  else
+    if [[ $blocked == yes ]]; then
+      success "Blocked: $bold$address$reset"
+    else
+      printf '%s%s%s Not blocked: %s%s%s\n' "$red" "$sym_fail" "$reset" "$bold" "$address" "$reset"
+    fi
+    printf '  %-10s %s\n' 'Ban' "${ban_entry:-none}${ban_match:+ ($ban_match)}" \
+      'Allowlist' "${allow_entry:-none}${allow_match:+ ($allow_match)}"
   fi
-
-  case $match in
-    exact)
-      success "Banned: $bold$entry$reset"
-      return 0
-      ;;
-    subnet)
-      success "Banned by subnet $bold$entry$reset"
-      return 0
-      ;;
-    *)
-      printf '%s%s%s Not banned: %s%s%s\n' "$red" "$sym_fail" "$reset" "$bold" "$address" "$reset"
-      return 1
-      ;;
-  esac
+  [[ $blocked == yes ]]
 }
 
 print_status() {
-  local state=$3 color symbol label
+  local state=$4 color symbol label
   if [[ ! -t 1 ]]; then
-    printf 'banned_hosts=%d\nbanned_subnets=%d\nactive=%s\n' "$1" "$2" "$state"
+    printf 'banned_hosts=%d\nbanned_subnets=%d\nallowlisted=%d\nactive=%s\n' "$1" "$2" "$3" "$state"
     return
   fi
   case $state in
     available) color=$green symbol=$sym_dot label='active' ;;
     *) color=$red symbol=$sym_fail label='unavailable' ;;
   esac
-  printf '  %-16s %s\n' 'Banned hosts' "$1" 'Banned subnets' "$2"
+  printf '  %-16s %s\n' 'Banned hosts' "$1" 'Banned subnets' "$2" 'Allowlisted' "$3"
   printf '  %-16s %s%s %s%s\n' 'Live rules' "$color" "$symbol" "$label" "$reset"
   if [[ $state == unavailable ]]; then
     printf '\n'
@@ -1100,15 +1266,17 @@ print_status() {
 }
 
 status() {
-  local host_count cidr_count active state=available
+  local host_count cidr_count allow_count active state=available
   host_count=$(read_hosts | wc -l)
   cidr_count=$(wc -l <"$cidrs")
+  allow_count=$(read_allow | wc -l)
   if ! active=$(active_suffix 2>/dev/null) \
     || ! nft -t list set inet nfban "blocked$active" >/dev/null 2>&1 \
-    || ! nft -t list set inet nfban "blocked_cidrs$active" >/dev/null 2>&1; then
+    || ! nft -t list set inet nfban "blocked_cidrs$active" >/dev/null 2>&1 \
+    || ! nft -t list set inet nfban "allowed$active" >/dev/null 2>&1; then
     state=unavailable
   fi
-  print_status "$host_count" "$cidr_count" "$state"
+  print_status "$host_count" "$cidr_count" "$allow_count" "$state"
   [[ $state == available ]]
 }
 
@@ -1153,7 +1321,7 @@ self_update() {
 }
 
 main() {
-  local command=${1-} address prefix network run batch='' dedupe=''
+  local command=${1-} action='' address prefix network run batch='' dedupe='' read_only=''
   # Frame terminal output with blank lines; cleanup closes the frame.
   if [[ -t 1 ]]; then
     printf '\n'
@@ -1164,8 +1332,7 @@ main() {
       usage
       return
       ;;
-    rm) command=remove ;;
-    init | reload | add | remove | check | list | status | self-update) ;;
+    init | reload | block | allow | check | status | self-update) ;;
     *) die "unknown command: $command" 'nfban --help' ;;
   esac
   shift
@@ -1175,31 +1342,51 @@ main() {
       return
       ;;
   esac
-  case $command in
-    add | remove)
+  if [[ $command == block || $command == allow ]]; then
+    action=${1-}
+    case $action in
+      rm) action=remove ;;
+      add | remove | list) ;;
+      '') die "nfban $command needs add, remove or list" "nfban $command --help" ;;
+      *) die "unknown subcommand: $command $action" "nfban $command --help" ;;
+    esac
+    shift
+    case ${1-} in
+      -h | --help)
+        usage "$command"
+        return
+        ;;
+    esac
+  fi
+  case $command/$action in
+    block/add | block/remove | allow/add | allow/remove)
       if (($# == 1)) && [[ $1 == --batch ]]; then
         batch=1
-      elif (($# == 1)) && [[ $command == remove && $1 == --dedupe ]]; then
+      elif (($# == 1)) && [[ $command/$action == block/remove && $1 == --dedupe ]]; then
         dedupe=1
       else
         (($# == 1)) \
-          || die 'expected one IPv4 address or CIDR' "${sudo_prefix}nfban $command 192.0.2.10"
+          || die 'expected one IPv4 address or CIDR' "${sudo_prefix}nfban $command $action 192.0.2.10"
         parse_address "$1" \
-          || die "invalid IPv4 address or CIDR: $1" "${sudo_prefix}nfban $command 192.0.2.10"
+          || die "invalid IPv4 address or CIDR: $1" "${sudo_prefix}nfban $command $action 192.0.2.10"
       fi
       ;;
-    check)
+    check/)
       (($# == 1)) \
         || die 'expected one IPv4 address or CIDR' 'nfban check 192.0.2.10'
       parse_address "$1" \
         || die "invalid IPv4 address or CIDR: $1" 'nfban check 192.0.2.10'
       ;;
-    *) (($# == 0)) || die "nfban $command takes no arguments" "${sudo_prefix}nfban $command" ;;
+    *)
+      (($# == 0)) || die "nfban $command${action:+ $action} takes no arguments" \
+        "${sudo_prefix}nfban $command${action:+ $action}"
+      ;;
   esac
+  if [[ $command == check || $action == list ]]; then read_only=1; fi
 
-  if ((EUID != 0)) && [[ $command != list && $command != check ]]; then
+  if ((EUID != 0)) && [[ -z $read_only ]]; then
     if [[ -n $sudo_prefix ]]; then
-      printf -v run '%q ' nfban "$command" "$@"
+      printf -v run '%q ' nfban "$command" ${action:+"$action"} "$@"
       die 'must run as root' "${sudo_prefix}${run% }"
     fi
     die 'must run as root'
@@ -1210,7 +1397,7 @@ main() {
   fi
   if [[ $command == init ]]; then install_packages; fi
   require flock
-  if [[ $command != list && $command != check ]]; then require nft; fi
+  if [[ -z $read_only ]]; then require nft; fi
   if [[ $command == init ]]; then
     init
     return
@@ -1220,28 +1407,35 @@ main() {
   fi
   [[ -f $unit && -d $hosts && -f $cidrs ]] \
     || die 'nfban is not initialized' "${sudo_prefix}nfban init"
-  if [[ $command == list || $command == status || $command == check ]]; then
+  if [[ -n $read_only || $command == status ]]; then
     lock shared
   else
     lock
   fi
-  case $command in
-    add)
-      if [[ -n $batch ]]; then batch_add; else change_ban add; fi
+  case $command/$action in
+    block/add)
+      if [[ -n $batch ]]; then batch_add; else change_entry block add; fi
       ;;
-    remove)
+    block/remove)
       if [[ -n $batch ]]; then
         batch_remove
       elif [[ -n $dedupe ]]; then
         dedupe_hosts
       else
-        change_ban remove
+        change_entry block remove
       fi
       ;;
-    check) check_ban ;;
-    reload) reload ;;
-    list) list_bans ;;
-    status) status ;;
+    block/list) list_bans ;;
+    allow/add)
+      if [[ -n $batch ]]; then batch_allow_add; else change_entry allow add; fi
+      ;;
+    allow/remove)
+      if [[ -n $batch ]]; then batch_allow_remove; else change_entry allow remove; fi
+      ;;
+    allow/list) read_allow ;;
+    check/) check_ban ;;
+    reload/) reload ;;
+    status/) status ;;
   esac
 }
 

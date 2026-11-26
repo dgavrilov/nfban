@@ -103,7 +103,7 @@ apply_line() {
       [[ -f $state/sets/$set_name ]] || { printf 'Error: No such file or directory\n' >&2; exit 1; }
       local item
       IFS=',' read -r -a items <<<"$body"
-      if [[ $set_name == blocked_cidrs* ]]; then
+      if [[ $set_name == blocked_cidrs* || $set_name == allowed* ]]; then
         for item in "${items[@]}"; do
           item=${item# }
           item=${item% }
@@ -215,6 +215,7 @@ assert_fail() {
 reset_state() {
   rm -rf -- "${config_dir:?}/hosts"/* "${nft_state:?}"/*
   : >"$config_dir/cidrs.txt"
+  rm -f -- "$config_dir/allow.txt"
   : >"$nft_log"
 }
 
@@ -223,44 +224,46 @@ reset_state
 assert_fail 'status unavailable before reload' "$test_nfban" status >/dev/null
 assert_ok 'initial reload' "$test_nfban" reload >/dev/null
 out=$("$test_nfban" status)
-assert_eq $'banned_hosts=0\nbanned_subnets=0\nactive=available' "$out" 'status key=value output'
+assert_eq $'banned_hosts=0\nbanned_subnets=0\nallowlisted=0\nactive=available' "$out" 'status key=value output'
 
 # 2. Single add, normalization, /0 rejection, covering subnet, overlap rejection
-assert_ok 'add host with /32 and leading zeros' "$test_nfban" add 010.0.0.5/32 >/dev/null
-assert_ok 'add unaligned CIDR' "$test_nfban" add 192.0.2.77/24 >/dev/null
-assert_fail 'reject /0 CIDR' "$test_nfban" add 0.0.0.0/0 2>/dev/null
-assert_fail 'reject /0 non-zero CIDR' "$test_nfban" add 192.0.2.1/0 2>/dev/null
-assert_fail 'reject invalid octet' "$test_nfban" add 256.0.0.1 2>/dev/null
-assert_fail 'reject overlapping CIDR' "$test_nfban" add 192.0.2.128/25 2>/dev/null
-out=$("$test_nfban" add 192.0.2.99)
+assert_ok 'add host with /32 and leading zeros' "$test_nfban" block add 010.0.0.5/32 >/dev/null
+assert_ok 'add unaligned CIDR' "$test_nfban" block add 192.0.2.77/24 >/dev/null
+assert_fail 'reject /0 CIDR' "$test_nfban" block add 0.0.0.0/0 2>/dev/null
+assert_fail 'reject /0 non-zero CIDR' "$test_nfban" block add 192.0.2.1/0 2>/dev/null
+assert_fail 'reject invalid octet' "$test_nfban" block add 256.0.0.1 2>/dev/null
+assert_fail 'reject overlapping CIDR' "$test_nfban" block add 192.0.2.128/25 2>/dev/null
+out=$("$test_nfban" block add 192.0.2.99)
 assert_eq '+ Already banned by subnet 192.0.2.0/24' "$out" 'host covered by subnet not saved'
-assert_eq $'10.0.0.5\n192.0.2.0/24' "$("$test_nfban" list)" 'list after adds'
+assert_eq $'10.0.0.5\n192.0.2.0/24' "$("$test_nfban" block list)" 'list after adds'
+assert_fail 'old top-level add is gone' "$test_nfban" add 10.0.0.6 2>/dev/null
+assert_fail 'unknown subcommand rejected' "$test_nfban" block drop 10.0.0.6 2>/dev/null
 
 # 3. check command
 out=$("$test_nfban" check 10.0.0.5)
-assert_eq $'banned=yes\nmatch=exact\nentry=10.0.0.5' "$out" 'check exact host'
+assert_eq $'blocked=yes\nbanned=yes\nban_match=exact\nban_entry=10.0.0.5\nallowed=no' "$out" 'check exact host'
 out=$("$test_nfban" check 192.0.2.42)
-assert_eq $'banned=yes\nmatch=subnet\nentry=192.0.2.0/24' "$out" 'check host covered by subnet'
+assert_eq $'blocked=yes\nbanned=yes\nban_match=subnet\nban_entry=192.0.2.0/24\nallowed=no' "$out" 'check host covered by subnet'
 out=$("$test_nfban" check 192.0.2.0/24)
-assert_eq $'banned=yes\nmatch=exact\nentry=192.0.2.0/24' "$out" 'check exact CIDR'
+assert_eq $'blocked=yes\nbanned=yes\nban_match=exact\nban_entry=192.0.2.0/24\nallowed=no' "$out" 'check exact CIDR'
 out=$("$test_nfban" check 192.0.2.128/25)
-assert_eq $'banned=yes\nmatch=subnet\nentry=192.0.2.0/24' "$out" 'check subnet covered by broader CIDR'
+assert_eq $'blocked=yes\nbanned=yes\nban_match=subnet\nban_entry=192.0.2.0/24\nallowed=no' "$out" 'check subnet covered by broader CIDR'
 rc=0
 out=$("$test_nfban" check 198.51.100.1) || rc=$?
 assert_eq '1' "$rc" 'check unbanned exit code'
-assert_eq 'banned=no' "$out" 'check unbanned output'
+assert_eq $'blocked=no\nbanned=no\nallowed=no' "$out" 'check unbanned output'
 
 # 4. Single remove deletes empty /16 file
-assert_ok 'remove last host in /16' "$test_nfban" rm 10.0.0.5 >/dev/null
+assert_ok 'remove last host in /16' "$test_nfban" block rm 10.0.0.5 >/dev/null
 assert_fail 'empty /16 file removed' test -e "$config_dir/hosts/010.000.txt"
 
 # 5. add --batch: comments, CRLF, duplicates, covered hosts, normalization
 printf '# comment\r\n\n  198.51.100.10  # inline\r\n198.51.100.10\n198.51.100.2/32\n203.0.113.55/24\n203.0.113.99\n192.0.2.5\n' \
-  | "$test_nfban" add --batch >/dev/null
-assert_eq $'192.0.2.0/24\n198.51.100.2\n198.51.100.10\n203.0.113.0/24' "$("$test_nfban" list)" 'list after add --batch'
+  | "$test_nfban" block add --batch >/dev/null
+assert_eq $'192.0.2.0/24\n198.51.100.2\n198.51.100.10\n203.0.113.0/24' "$("$test_nfban" block list)" 'list after add --batch'
 
 # 6. add --batch: rejects invalid line and /0 atomically
-err=$(printf '198.51.100.20\n0.0.0.0/0\nnot-an-ip\n' | "$test_nfban" add --batch 2>&1 >/dev/null || :)
+err=$(printf '198.51.100.20\n0.0.0.0/0\nnot-an-ip\n' | "$test_nfban" block add --batch 2>&1 >/dev/null || :)
 assert_ok 'reports line 2 for /0' grep -q 'line 2:' <<<"$err"
 assert_ok 'reports line 3 for invalid' grep -q 'line 3:' <<<"$err"
 assert_fail 'atomic rollback on invalid batch' "$test_nfban" check 198.51.100.20 >/dev/null
@@ -268,7 +271,7 @@ assert_fail 'atomic rollback on invalid batch' "$test_nfban" check 198.51.100.20
 # 7. add --batch: duplicate CIDR overlap reports minimum line number (2, not 10)
 err=$(
   printf '10.1.0.1\n192.0.2.128/25\n10.1.0.2\n10.1.0.3\n10.1.0.4\n10.1.0.5\n10.1.0.6\n10.1.0.7\n10.1.0.8\n192.0.2.128/25\n' \
-    | "$test_nfban" add --batch 2>&1 >/dev/null || :
+    | "$test_nfban" block add --batch 2>&1 >/dev/null || :
 )
 assert_ok 'overlap reports earliest line 2' grep -q '192.0.2.128/25 (line 2) overlaps 192.0.2.0/24 (saved)' <<<"$err"
 
@@ -277,39 +280,39 @@ assert_ok 'overlap reports earliest line 2' grep -q '192.0.2.128/25 (line 2) ove
 grep -Fxv '203.0.113.0/24' "$nft_state/sets/blocked_cidrs_next" >"$nft_state/sets/blocked_cidrs_next.tmp" || :
 mv -f -- "$nft_state/sets/blocked_cidrs_next.tmp" "$nft_state/sets/blocked_cidrs_next"
 
-out=$(printf '# remove batch\n198.51.100.2\n198.51.100.10\n198.51.100.99\n203.0.113.0/24\n192.0.2.0/24\n' | "$test_nfban" rm --batch)
+out=$(printf '# remove batch\n198.51.100.2\n198.51.100.10\n198.51.100.99\n203.0.113.0/24\n192.0.2.0/24\n' | "$test_nfban" block rm --batch)
 assert_ok 'batch remove summary hosts' grep -q 'Removed hosts[[:space:]]*2' <<<"$out"
 assert_ok 'batch remove summary subnets' grep -q 'Removed subnets[[:space:]]*2' <<<"$out"
 assert_ok 'batch remove summary not saved' grep -q 'Not saved[[:space:]]*1' <<<"$out"
-assert_eq '' "$("$test_nfban" list)" 'list empty after batch remove'
+assert_eq '' "$("$test_nfban" block list)" 'list empty after batch remove'
 assert_fail 'empty /16 file deleted after batch remove' test -e "$config_dir/hosts/198.051.txt"
 
 # 8a. remove --dedupe drops hosts covered by subnets, live and on disk
-printf '198.51.100.7\n198.51.100.200\n203.0.113.5\n203.0.113.9\n' | "$test_nfban" add --batch >/dev/null
-"$test_nfban" add 198.51.100.0/25 >/dev/null
-"$test_nfban" add 203.0.113.0/24 >/dev/null
+printf '198.51.100.7\n198.51.100.200\n203.0.113.5\n203.0.113.9\n' | "$test_nfban" block add --batch >/dev/null
+"$test_nfban" block add 198.51.100.0/25 >/dev/null
+"$test_nfban" block add 203.0.113.0/24 >/dev/null
 # Drop a covering subnet from the live set: dedupe must restore it before
 # removing its hosts.
 for set_file in "$nft_state"/sets/blocked_cidrs*; do
   grep -Fxv '203.0.113.0/24' "$set_file" >"$set_file.tmp" || :
   mv -f -- "$set_file.tmp" "$set_file"
 done
-out=$("$test_nfban" rm --dedupe)
+out=$("$test_nfban" block rm --dedupe)
 assert_eq '+ Removed 3 host(s) covered by subnets' "$out" 'dedupe summary'
 assert_ok 'dedupe restores missing live subnet' grep -rFxq 203.0.113.0/24 "$nft_state/sets"
-assert_eq $'198.51.100.0/25\n198.51.100.200\n203.0.113.0/24' "$("$test_nfban" list)" 'list after dedupe'
+assert_eq $'198.51.100.0/25\n198.51.100.200\n203.0.113.0/24' "$("$test_nfban" block list)" 'list after dedupe'
 assert_fail 'dedupe deletes emptied /16 file' test -e "$config_dir/hosts/203.000.txt"
 assert_fail 'dedupe removes covered host from live set' grep -rFxq 203.0.113.5 "$nft_state/sets"
 assert_ok 'dedupe keeps uncovered host in live set' grep -rFxq 198.51.100.200 "$nft_state/sets"
-out=$("$test_nfban" rm --dedupe)
+out=$("$test_nfban" block rm --dedupe)
 assert_eq '+ No hosts covered by subnets' "$out" 'dedupe is a no-op when nothing is covered'
-printf '198.51.100.0/25\n198.51.100.200\n203.0.113.0/24\n' | "$test_nfban" rm --batch >/dev/null
+printf '198.51.100.0/25\n198.51.100.200\n203.0.113.0/24\n' | "$test_nfban" block rm --batch >/dev/null
 
 # 9. list | head produces no SIGPIPE stderr noise
 for i in $(seq 1 50); do
   printf '10.%d.0.1\n' "$i"
-done | "$test_nfban" add --batch >/dev/null
-sigpipe_err=$({ "$test_nfban" list 2>&3 | head -n 1 >/dev/null || :; } 3>&1)
+done | "$test_nfban" block add --batch >/dev/null
+sigpipe_err=$({ "$test_nfban" block list 2>&3 | head -n 1 >/dev/null || :; } 3>&1)
 assert_eq '' "$sigpipe_err" 'list | head has no stderr noise'
 
 # 10. status suppresses nft stderr when set is missing
@@ -327,8 +330,60 @@ assert_ok 'previous rules stay active after failed reload' "$test_nfban" status 
 
 # 12. add --batch rejects non-regular file in hosts/
 ln -s /dev/null "$config_dir/hosts/198.051.txt"
-assert_fail 'add --batch rejects symlink in hosts/' "$test_nfban" add --batch <<<'198.51.100.1' >/dev/null 2>&1
+assert_fail 'add --batch rejects symlink in hosts/' "$test_nfban" block add --batch <<<'198.51.100.1' >/dev/null 2>&1
 rm -f -- "$config_dir/hosts/198.051.txt"
+
+# 12a. allowlist: precedes bans in the chain, overrides them without changing
+# them, rejects overlaps and survives reload.
+assert_ok 'reload before allowlist tests' "$test_nfban" reload >/dev/null
+assert_ok 'allow rule comes first' grep -Eq '^ip saddr @allowed(_next)? accept$' <<<"$(head -n 1 "$nft_state/chains/prerouting")"
+"$test_nfban" block add 192.0.2.0/24 >/dev/null
+assert_ok 'allow host inside banned subnet' "$test_nfban" allow add 192.0.2.5 >/dev/null
+assert_ok 'allowed host is live' grep -Fxq 192.0.2.5 "$nft_state"/sets/allowed*
+assert_fail 'reject allow subnet overlapping saved host' "$test_nfban" allow add 192.0.2.0/29 2>/dev/null
+out=$("$test_nfban" allow add 192.0.2.5)
+assert_eq '+ Already allowlisted: 192.0.2.5' "$out" 'repeated allow add'
+rc=0
+out=$("$test_nfban" check 192.0.2.5) || rc=$?
+assert_eq '1' "$rc" 'allowlisted ban is not blocked'
+assert_eq $'blocked=no\nbanned=yes\nban_match=subnet\nban_entry=192.0.2.0/24\nallowed=yes\nallow_match=exact\nallow_entry=192.0.2.5' \
+  "$out" 'check allowlisted host inside banned subnet'
+assert_ok 'subnet ban still blocks other hosts' "$test_nfban" check 192.0.2.6 >/dev/null
+err=$("$test_nfban" block add 192.0.2.5 2>&1 >/dev/null)
+assert_ok 'block add warns about allowlist' grep -Fq 'allowlisted by 192.0.2.5' <<<"$err"
+err=$("$test_nfban" block add 10.9.9.9 2>&1 >/dev/null)
+assert_eq '' "$err" 'no warning for ban outside allowlist'
+
+out=$(printf '10.9.0.0/16\n198.51.100.7\n# comment\n10.9.0.0/16\n' | "$test_nfban" allow add --batch)
+assert_ok 'allow batch summary new' grep -q 'New entries[[:space:]]*2' <<<"$out"
+assert_eq $'10.9.0.0/16\n192.0.2.5\n198.51.100.7' "$("$test_nfban" allow list)" 'allow list after batch'
+err=$(printf '203.0.113.1\n10.9.8.0/24\n' | "$test_nfban" allow add --batch 2>&1 >/dev/null || :)
+assert_ok 'allow batch reports overlap with line' grep -Fq '10.9.8.0/24 (line 2) overlaps 10.9.0.0/16 (saved)' <<<"$err"
+assert_fail 'allow batch is atomic on overlap' grep -Fxq 203.0.113.1 "$config_dir/allow.txt"
+err=$(printf '10.9.1.1\n10.8.1.1\n' | "$test_nfban" block add --batch 2>&1 >/dev/null)
+assert_ok 'block batch warns about allowlisted bans' grep -Fq '1 listed ban(s) are allowlisted' <<<"$err"
+
+assert_ok 'reload with allowlist' "$test_nfban" reload >/dev/null
+assert_eq $'10.9.0.0/16\n192.0.2.5\n198.51.100.7' "$(cat "$nft_state"/sets/allowed*)" 'reload loads allowlist'
+assert_ok 'allow rule still first after reload' grep -Eq '^ip saddr @allowed(_next)? accept$' <<<"$(head -n 1 "$nft_state/chains/prerouting")"
+out=$("$test_nfban" status)
+assert_ok 'status counts allowlist' grep -Fxq 'allowlisted=3' <<<"$out"
+
+out=$(printf '10.9.0.0/16\n203.0.113.200\n' | "$test_nfban" allow rm --batch)
+assert_ok 'allow batch remove summary' grep -q 'Removed entries[[:space:]]*1' <<<"$out"
+assert_fail 'removed allow subnet gone live' grep -Fxq 10.9.0.0/16 "$nft_state"/sets/allowed*
+out=$("$test_nfban" allow rm 198.51.100.7)
+assert_eq '+ Removed exact allowlist entry 198.51.100.7' "$out" 'allow rm exact'
+"$test_nfban" allow rm 192.0.2.5 >/dev/null
+assert_eq '' "$(cat "$config_dir/allow.txt")" 'allowlist file kept empty'
+assert_ok 'unallowed host is blocked again' "$test_nfban" check 192.0.2.5 >/dev/null
+printf '192.0.2.0/24\n10.9.9.9\n10.9.1.1\n10.8.1.1\n' | "$test_nfban" block rm --batch >/dev/null
+
+# 12b. allow commands require live rules with the allowlist set.
+rm -f -- "$nft_state"/sets/allowed*
+assert_fail 'allow add needs allowlist set' "$test_nfban" allow add 192.0.2.1 2>/dev/null
+assert_fail 'status unavailable without allowlist set' "$test_nfban" status >/dev/null
+assert_ok 'reload restores allowlist set' "$test_nfban" reload >/dev/null
 
 # 13. self-update: up-to-date, invalid payload rejection, atomic replacement
 cat >"$mock_bin/curl" <<'MOCK_CURL'
