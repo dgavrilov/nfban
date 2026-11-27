@@ -235,6 +235,8 @@ assert_fail 'reject invalid octet' "$test_nfban" block add 256.0.0.1 2>/dev/null
 assert_fail 'reject overlapping CIDR' "$test_nfban" block add 192.0.2.128/25 2>/dev/null
 out=$("$test_nfban" block add 192.0.2.99)
 assert_eq '+ Already banned by subnet 192.0.2.0/24' "$out" 'host covered by subnet not saved'
+out=$("$test_nfban" block 192.0.2.99)
+assert_eq '+ Already banned by subnet 192.0.2.0/24' "$out" 'block without add is add'
 assert_eq $'10.0.0.5\n192.0.2.0/24' "$("$test_nfban" block list)" 'list after adds'
 assert_fail 'old top-level add is gone' "$test_nfban" add 10.0.0.6 2>/dev/null
 assert_fail 'unknown subcommand rejected' "$test_nfban" block drop 10.0.0.6 2>/dev/null
@@ -261,6 +263,10 @@ assert_fail 'empty /16 file removed' test -e "$config_dir/hosts/010.000.txt"
 printf '# comment\r\n\n  198.51.100.10  # inline\r\n198.51.100.10\n198.51.100.2/32\n203.0.113.55/24\n203.0.113.99\n192.0.2.5\n' \
   | "$test_nfban" block add --batch >/dev/null
 assert_eq $'192.0.2.0/24\n198.51.100.2\n198.51.100.10\n203.0.113.0/24' "$("$test_nfban" block list)" 'list after add --batch'
+out=$(printf '198.51.100.30\n' | "$test_nfban" block --batch)
+assert_ok 'block --batch without add is add --batch' grep -q 'New hosts[[:space:]]*1' <<<"$out"
+assert_ok 'block --batch without add saves host' grep -Fxq 198.51.100.30 <<<"$("$test_nfban" block list)"
+"$test_nfban" block rm 198.51.100.30 >/dev/null
 
 # 6. add --batch: rejects invalid line and /0 atomically
 err=$(printf '198.51.100.20\n0.0.0.0/0\nnot-an-ip\n' | "$test_nfban" block add --batch 2>&1 >/dev/null || :)
@@ -343,6 +349,8 @@ assert_ok 'allowed host is live' grep -Fxq 192.0.2.5 "$nft_state"/sets/allowed*
 assert_fail 'reject allow subnet overlapping saved host' "$test_nfban" allow add 192.0.2.0/29 2>/dev/null
 out=$("$test_nfban" allow add 192.0.2.5)
 assert_eq '+ Already allowlisted: 192.0.2.5' "$out" 'repeated allow add'
+out=$("$test_nfban" allow 192.0.2.5)
+assert_eq '+ Already allowlisted: 192.0.2.5' "$out" 'allow without add is add'
 rc=0
 out=$("$test_nfban" check 192.0.2.5) || rc=$?
 assert_eq '1' "$rc" 'allowlisted ban is not blocked'
@@ -357,6 +365,10 @@ assert_eq '' "$err" 'no warning for ban outside allowlist'
 out=$(printf '10.9.0.0/16\n198.51.100.7\n# comment\n10.9.0.0/16\n' | "$test_nfban" allow add --batch)
 assert_ok 'allow batch summary new' grep -q 'New entries[[:space:]]*2' <<<"$out"
 assert_eq $'10.9.0.0/16\n192.0.2.5\n198.51.100.7' "$("$test_nfban" allow list)" 'allow list after batch'
+out=$(printf '203.0.113.7\n' | "$test_nfban" allow --batch)
+assert_ok 'allow --batch without add is add --batch' grep -q 'New entries[[:space:]]*1' <<<"$out"
+assert_ok 'allow --batch without add saves entry' grep -Fxq 203.0.113.7 "$config_dir/allow.txt"
+"$test_nfban" allow rm 203.0.113.7 >/dev/null
 err=$(printf '203.0.113.1\n10.9.8.0/24\n' | "$test_nfban" allow add --batch 2>&1 >/dev/null || :)
 assert_ok 'allow batch reports overlap with line' grep -Fq '10.9.8.0/24 (line 2) overlaps 10.9.0.0/16 (saved)' <<<"$err"
 assert_fail 'allow batch is atomic on overlap' grep -Fxq 203.0.113.1 "$config_dir/allow.txt"

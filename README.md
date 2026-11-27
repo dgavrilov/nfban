@@ -112,28 +112,31 @@ symbols. Colors are disabled when the stream is not a terminal, `TERM=dumb`, or
 locale is UTF-8. Errors and warnings go to stderr; errors suggest a command to
 run next.
 
-| Command                  | Description                                               |
-| ------------------------ | --------------------------------------------------------- |
-| `init`                   | Install packages, create storage, enable the unit         |
-| `reload`                 | Rebuild live sets from saved files and switch atomically  |
-| `block add <IPv4\|CIDR>` | Ban an address or subnet, live and on disk                |
-| `block add --batch`      | Ban addresses and subnets read from stdin                 |
-| `block rm <IPv4\|CIDR>`  | Remove an exact ban, live and on disk (alias: `remove`)   |
-| `block rm --batch`       | Remove exact bans read from stdin                         |
-| `block rm --dedupe`      | Remove hosts covered by saved subnets                     |
-| `block list`             | Print saved bans in numeric order (no root needed)        |
-| `allow add <IPv4\|CIDR>` | Allowlist an address or subnet, live and on disk          |
-| `allow add --batch`      | Allowlist addresses and subnets read from stdin           |
-| `allow rm <IPv4\|CIDR>`  | Remove an exact allowlist entry (alias: `remove`)         |
-| `allow rm --batch`       | Remove exact allowlist entries read from stdin            |
-| `allow list`             | Print the allowlist in numeric order (no root needed)     |
-| `check <IPv4\|CIDR>`     | Check if an address or subnet is blocked (no root needed) |
-| `status`                 | Show counts and the state of live rules                   |
-| `self-update`            | Download the latest version and replace the script        |
+| Command                    | Description                                               |
+| -------------------------- | --------------------------------------------------------- |
+| `init`                     | Install packages, create storage, enable the unit         |
+| `reload`                   | Rebuild live sets from saved files and switch atomically  |
+| `block [add] <IPv4\|CIDR>` | Ban an address or subnet, live and on disk                |
+| `block [add] --batch`      | Ban addresses and subnets read from stdin                 |
+| `block rm <IPv4\|CIDR>`    | Remove an exact ban, live and on disk (alias: `remove`)   |
+| `block rm --batch`         | Remove exact bans read from stdin                         |
+| `block rm --dedupe`        | Remove hosts covered by saved subnets                     |
+| `block list`               | Print saved bans in numeric order (no root needed)        |
+| `allow [add] <IPv4\|CIDR>` | Allowlist an address or subnet, live and on disk          |
+| `allow [add] --batch`      | Allowlist addresses and subnets read from stdin           |
+| `allow rm <IPv4\|CIDR>`    | Remove an exact allowlist entry (alias: `remove`)         |
+| `allow rm --batch`         | Remove exact allowlist entries read from stdin            |
+| `allow list`               | Print the allowlist in numeric order (no root needed)     |
+| `check <IPv4\|CIDR>`       | Check if an address or subnet is blocked (no root needed) |
+| `status`                   | Show counts and the state of live rules                   |
+| `self-update`              | Download the latest version and replace the script        |
 
 Versions before the allowlist used top-level `add`, `remove`/`rm` and `list`;
 these are now `block add`, `block rm` and `block list`. After upgrading, run
 `nfban init && nfban reload` to create `allow.txt` and the allowlist set.
+
+`add` may be omitted: `nfban block 192.0.2.10` is `nfban block add 192.0.2.10`,
+and the same holds for `allow`.
 
 ### Examples
 

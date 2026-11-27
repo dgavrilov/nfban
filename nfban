@@ -105,36 +105,37 @@ batches.' \
         'nfban reload'
       ;;
     block)
-      command_help 'nfban block add <IPv4|CIDR>
-  nfban block add --batch
+      command_help 'nfban block [add] <IPv4|CIDR>
+  nfban block [add] --batch
   nfban block <remove|rm> <IPv4|CIDR>
   nfban block <remove|rm> --batch
   nfban block <remove|rm> --dedupe
   nfban block list' \
-        'add bans an address or subnet live and saves it; a host inside a saved subnet
-is not saved again. add warns when the allowlist overrides the new ban. remove
-deletes only the exact ban, not any covering subnet. --dedupe removes saved
-hosts already covered by a saved subnet. With --batch, reads one address or
-subnet per line from stdin; blank lines and # comments are skipped. Nothing
-changes if any line is invalid or a new subnet overlaps another one. list
-prints saved bans in numeric order and needs no root.' \
-        'nfban block add 192.0.2.10' 'nfban block add 198.51.100.0/24' \
+        'add bans an address or subnet live and saves it; add may be omitted. A host
+inside a saved subnet is not saved again. add warns when the allowlist
+overrides the new ban. remove deletes only the exact ban, not any covering
+subnet. --dedupe removes saved hosts already covered by a saved subnet. With
+--batch, reads one address or subnet per line from stdin; blank lines and #
+comments are skipped. Nothing changes if any line is invalid or a new subnet
+overlaps another one. list prints saved bans in numeric order and needs no
+root.' \
+        'nfban block 192.0.2.10' 'nfban block add 198.51.100.0/24' \
         'nfban block add --batch < bans.txt' 'nfban block rm 192.0.2.10' \
         'nfban block rm --dedupe' 'nfban block list | wc -l'
       ;;
     allow)
-      command_help 'nfban allow add <IPv4|CIDR>
-  nfban allow add --batch
+      command_help 'nfban allow [add] <IPv4|CIDR>
+  nfban allow [add] --batch
   nfban allow <remove|rm> <IPv4|CIDR>
   nfban allow <remove|rm> --batch
   nfban allow list' \
         'Allowlisted addresses and subnets are accepted before bans are checked, so
 they override bans without changing them. Entries must not overlap each other.
-remove deletes only the exact entry. With --batch, reads one address or subnet
-per line from stdin; blank lines and # comments are skipped. Nothing changes if
-any line is invalid or overlaps another entry. list prints the allowlist in
-numeric order and needs no root.' \
-        'nfban allow add 192.0.2.10' 'nfban allow add 198.51.100.0/24' \
+add may be omitted. remove deletes only the exact entry. With --batch, reads one
+address or subnet per line from stdin; blank lines and # comments are skipped.
+Nothing changes if any line is invalid or overlaps another entry. list prints
+the allowlist in numeric order and needs no root.' \
+        'nfban allow 192.0.2.10' 'nfban allow add 198.51.100.0/24' \
         'nfban allow add --batch < allow.txt' 'nfban allow rm 192.0.2.10' \
         'nfban allow list'
       ;;
@@ -1347,6 +1348,11 @@ main() {
     case $action in
       rm) action=remove ;;
       add | remove | list) ;;
+      # Bare address or --batch: shorthand for add.
+      [0-9]* | --batch)
+        action=add
+        set -- add "$@"
+        ;;
       '') die "nfban $command needs add, remove or list" "nfban $command --help" ;;
       *) die "unknown subcommand: $command $action" "nfban $command --help" ;;
     esac
